@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-09-18
+
+本版为 v2.3.0 的回归修复版本：三个缺陷均由 v2.3.0 的主题与终端改造引入，其中移动端入口缺失会直接阻断移动端用户使用 AI 助手。
+
+### Fixed / Changed
+
+- **移动端丢失 SFTP 与 AI Agent 入口（功能性阻断）**：
+  - v2.3.0 将 SFTP / 自定义命令 / AI Agent 三个抽屉按钮收进 `#terminal-drawer-segmented-bar`，并给该容器加上 `.desktop-terminal-action`；移动端媒体查询会整块隐藏它，而 `#mobile-more-menu` 当时只保留了「自定义命令」入口，于是移动端同时失去 SFTP 与 AI Agent 的打开方式（剩余路径仅“询问 AI 助手”浮动按钮，需先选中文本，不构成可用入口）；
+  - 现补回 `#mobile-sftp-btn` 与 `#mobile-agent-btn`，并把抽屉互斥开关抽成单一入口 `applyDrawerToggle()` 供桌面分段条与移动端菜单共用（不可用时回退透镜激活态）；移动端 AI Agent 入口的解锁状态与桌面按钮同步（登录解锁、一次性分享会话隐藏）。
+- **菜单按钮 `hidden` 失效（被掩盖的既有缺陷）**：
+  - `.mobile-more-menu > button` 的 `display: flex` 特异性高于 Tailwind 的 `.hidden`，因此往菜单按钮上加 `hidden` 完全无效——一次性分享会话一直尝试隐藏「自定义命令」入口却从未生效（违反 AGENTS.md #24），新增的 AI Agent 入口也会在匿名模式下泄露；
+  - 已补 `.mobile-more-menu > button.hidden { display: none }` 使其真正生效。
+- **Liquid Glass 下 AI 模型下拉与设置面板失去滚动能力**：
+  - 主题规则对 `:is(.server-card, .cyber-box)` 使用了 `overflow: hidden` 简写，会同时把 `overflow-x/overflow-y` 置为 hidden，且特异性高于 Tailwind 的 `.overflow-y-auto`；而 `#ai-model-menu` 与 `.responsive-modal-panel` 都带 `.cyber-box`，滚动能力被整体剥夺（大列表只能看到前几项且无法选择）；
+  - 现移除该简写，裁剪需求单独收敛到 `html[data-ui-style="liquid"] .server-card`。`.theme-accent-line` 在非 cyberpunk 风格下本就为 `opacity: 0`，故 Liquid Glass 下 `.cyber-box` 无需任何裁剪。
+- **AI 设置弹窗出现原生横向滚动条**：
+  - 「获取模型列表」按钮为 `shrink-0` 且 `#ai-model-combobox` 未声明 `min-width: 0`，flex 行无法收缩，整行比面板宽出约 80px；`overflow-y: auto` 使 `overflow-x` 计算为 `auto`，底部随即出现横向滚动条并把左侧标签挤出可视区；
+  - 现改为 `.responsive-modal-panel { overflow-x: hidden }` + 面板内 `.terminal-input { min-width: 0 }` + 组合框 `min-w-0`；并按内容适当放宽弹窗宽度（`sm:max-w-lg`），长模型 ID 在桌面端可完整展示。
+- **滚动条收敛到主题体系**：
+  - 新增全局主题化滚动条兜底（伪元素级 / 通配级特异性，`.custom-scrollbar`、`.no-scrollbar` 与组件自身规则仍按类优先级覆盖），4 套内置主题的 `--scrollbar-*` 变量自动生效；尺寸固定为 `--scrollbar-size: 8px`，避免切换主题时宽度变化引发终端列数需重算；
+  - 补齐从未实现的 `.no-scrollbar`（此前被 SFTP 面包屑、片段分类胶囊、Agent 快捷指令条引用但无定义，导致这些“本应隐藏滚动条”的容器一直显示原生滚动条）。
+
+## [2.3.0] - 2026-09-18
+
+### Added
+
+- **Theme V4 主题契约（`schemaVersion: 4`）**：
+  - 内置主题收敛为 Standard Dark、Standard Light、Cyberpunk、Liquid Glass 四款；退役的 `apple` / `gruvbox` / `crt` / `glass` 由新增 `LEGACY_BASE_THEME_MAP` 平滑映射到继任主题，历史自定义主题导入与本地恢复不再静默回退到默认配色；未登记的更早主题名（如 `glacier`）按规范丢弃 `baseTheme`，交由明暗方案兜底；
+  - `appearance.style` 枚举新增 `liquid` 液态玻璃外观档位；[在线主题编辑器](https://newbietan.github.io/CloudSSH/) 同步开放该选项——此前 `liquid` 只能由内置预设间接产生，用户无法手工选择或在切换后恢复；
+  - `schemaVersion` 仅在导出时写入、服务端不校验入参，因此全部 V2 / V3 历史主题文件继续可导入。
+- **Liquid Glass 内置主题**：以纯 CSS 光学管线还原 macOS 26 液态玻璃质感，与终端 WebGL 渲染路径正交。
+  - 全屏流体画布：5 节点 mesh 渐变色停靠点叠加全幅对角线性基底，顶栏 / 标签栏 / 底栏改为无界高透玻璃条，漂移动画缩放由 200% 收敛至 130% 以避免运动出画露白；
+  - 五层厚玻璃光影：大弥散环境阴影 + 顶棱 1px 镜面天光棱线 + 底缘内反光厚度辉光 + 1px 环形微描边，卡片 / 弹窗 / 浮层共用同一组 `--shadow-*` 令牌；
+  - 指针天光追踪：`pointermove` 经 `requestAnimationFrame` 节流后仅写入 `--mx` / `--my` 两个 CSS 变量，零重排地呈现跟随指针的镜面高光，触屏与无 hover 设备自动禁用；
+  - 液态过冲手感：按钮与卡片统一 `cubic-bezier(0.34, 1.56, 0.64, 1)` 过冲回弹与 `scale(0.965)` 按压形变。
+- **双边异步物理弹簧切换器**：主题切换与终端抽屉切换共用同一套阻尼谐振子引擎。
+  - 领先边（刚度 260 / 阻尼 26）快速前驱、拖后边（刚度 130 / 阻尼 15）滞后追赶，滑行途中透镜被真实拉长再弹性收束；弹簧停稳后立即断开 `requestAnimationFrame`，静止态零主线程消耗；
+  - 用户空间顶栏升级为全圆角悬浮玻璃灵动岛（主题分段条 + 操作微药丸胶囊），不再使用原生 `<select>` 下拉。
+- **终端抽屉分段切换器**：将 SFTP、自定义命令、AI Agent 三个抽屉整合为分段胶囊，互斥切换且透镜丝滑滑移，顶栏操作区同步编组为玻璃灵动岛。
+
+### Fixed / Changed
+
+- **抽屉打开时顶栏切换器不可点击**：抽屉原为全高浮层，且自定义命令遮罩覆盖全屏，打开后会完全盖住顶栏，导致只能在「关闭」与「某个抽屉」之间切换、无法在三个抽屉间直接切换；新增 `--drawer-top` 变量（桌面 `4rem` 对齐顶栏 `h-16`、移动端复位 `0`），抽屉与遮罩统一自顶栏下方展开。
+- **三大侧边抽屉几何与材质统一**：SFTP / 自定义命令 / AI Agent 此前各自以内联 `style.width` 声明宽度（420–600px 与 440–680px 不一致），现收敛为唯一来源；AI Agent 与 SFTP 内层包裹的不透明底色会盖住面板毛玻璃，已置为透明；自定义命令抽屉补齐此前缺失的移动端规则（触屏平板下不会停驻在 420px）。
+- **PC 端泄露移动端「更多操作」按钮**：`.terminal-header-actions > button` 的 `display: inline-flex` 特异性高于 `.mobile-only { display: none }`，已补 `:not(.mobile-only)` 并追加桌面端兜底规则。
+- **抽屉分段胶囊边缘不可辨识**：原纯白边框与单层极淡阴影在浅色玻璃底上完全糊掉，改为多层凹槽轮廓（外层冷色双描边 + 内侧顶光凹影 + 底缘内高光）。
+- **终端与全站留白**：Liquid Glass 终端卡片内边距由 16px 收窄至 `6px 12px`、状态栏底距由 16px 收敛至 6px；全主题终端底栏与用户空间底栏统一为 32px 紧凑高度。
+- **终端顶栏精简**：移除终端会话页的「上传自定义主题」入口（匿名模式不再支持自定义主题导入，用户空间入口保留）。
+- **Liquid Glass 命令片段搜索框**：修复双重边框与搜索图标被遮挡。
+- **文案**：命令片段抽屉分段标签由「片段」改为「自定义命令」，完整名称保留在原生 tooltip 中（英文 Snippets → Commands）。
+- **测试稳定性**：`mobile-terminal.spec.ts` 三处用例在 `page.goto` 后立即手工提升 `#terminal-section`，而 `init()` 在 `/api/auth/me` 返回后会经 `showAuthSection() → deactivateTerminalView()` 再次隐藏该区域，并行执行时偶发失败；现统一等待 `#connection-form` 可见。
+
 ## [2.2.9] - 2026-09-17
 
 ### Added
