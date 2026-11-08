@@ -1,3 +1,4 @@
+import { emptyAgentSessionState } from '../agent-session-state';
 import {
   getCipherSpec,
   getMacAlgorithmsForCipher,
@@ -100,6 +101,8 @@ const IDLE_WATCHDOG_CHECK_MS = 10_000;
 const IDLE_WATCHDOG_GRACE_MS = 60_000;
 // 浏览器→服务器终端输入队列上限：浏览器卡死时防止 channelDataQueue 无界堆积。
 const MAX_INPUT_QUEUE_BYTES = 4 * 1024 * 1024;
+const MAX_SSH_VERSION_PREAMBLE_BYTES = 64 * 1024;
+const MAX_SSH_IDENTIFICATION_BYTES = 255; // RFC 4253 §4.2, including CRLF.
 
 type ActiveAuthMethod = 'none' | 'password' | 'publickey' | 'keyboard-interactive';
 
@@ -209,6 +212,7 @@ export class SSHSession {
   private hostKeyType: string = 'unknown';
 
   private versionRawBuffer: Uint8Array = new Uint8Array(0);
+  private versionPreambleBytes = 0;
   private negotiatedCipherC2S: string = 'aes128-gcm@openssh.com';
   private negotiatedCipherS2C: string = 'aes128-gcm@openssh.com';
   private negotiatedMacC2S: string = 'none';
@@ -249,6 +253,7 @@ export class SSHSession {
   private pendingAgentConfirmation: {
     id: string;
     command: string;
+    reason: string;
     resolve: (approved: boolean) => void;
     signal?: AbortSignal;
     onAbort: () => void;
@@ -513,11 +518,15 @@ export class SSHSession {
               }
             }
 
-            if (lfIndex === -1) {
-              break;
+            const lineEnd = lfIndex === -1 ? this.versionRawBuffer.length : lfIndex + 1;
+            if (this.versionPreambleBytes + lineEnd - scanOffset > MAX_SSH_VERSION_PREAMBLE_BYTES) {
+              this.sendError('SSH 版本交换前导数据超过大小限制', 'packet_error');
+              this.close(true);
+              return;
             }
+            if (lfIndex === -1) break;
 
-            const lineBytes = this.versionRawBuffer.subarray(scanOffset, lfIndex + 1);
+            const lineBytes = this.versionRawBuffer.subarray(scanOffset, lineEnd);
             scanOffset = lfIndex + 1;
 
             let lineStr = this.textDecoder.decode(lineBytes);
@@ -525,16 +534,22 @@ export class SSHSession {
             if (lineStr.endsWith('\r')) lineStr = lineStr.slice(0, -1);
 
             if (lineStr.startsWith('SSH-')) {
+              if (lineBytes.length > MAX_SSH_IDENTIFICATION_BYTES) {
+                this.sendError('SSH 版本标识超过 255 字节', 'packet_error');
+                this.close(true);
+                return;
+              }
               this.transport.handleVersionExchange(`${lineStr}\r\n`);
               remaining = this.versionRawBuffer.subarray(scanOffset);
               versionFound = true;
               break;
-            } else {
             }
+            this.versionPreambleBytes += lineBytes.length;
           }
 
           if (versionFound) {
             this.versionRawBuffer = new Uint8Array(0);
+            this.versionPreambleBytes = 0;
             this.sendStatus('版本交换完成，正在密钥协商...', 'version_ready');
             this.state = 'kex';
             await this.startKEX();
@@ -2206,6 +2221,11 @@ export class SSHSession {
           return;
         }
 
+        if (parsed.type === 'agent_sync') {
+          this.sendAgentState(parsed.syncId);
+          return;
+        }
+
         // Agent messages
         // agent_stop / agent_confirm 已由 durable-object.ts 在 webSocketMessage 入口
         // 提前拦截并通过 handleAgentControl 同步处理，不再到达此处。
@@ -2294,13 +2314,20 @@ export class SSHSession {
   }
 
   private async handleSFTPMessage(msg: any): Promise<void> {
+    const requestId =
+      msg.type === 'sftp_stat' &&
+      typeof msg.requestId === 'string' &&
+      msg.requestId.length > 0 &&
+      msg.requestId.length <= 64
+        ? msg.requestId
+        : undefined;
     if (this.state !== 'ready') {
-      this.sendSFTPError(this.getSFTPOperation(msg.type), 'SSH 连接未就绪');
+      this.sendSFTPError(this.getSFTPOperation(msg.type), 'SSH 连接未就绪', requestId);
       return;
     }
 
     if (this.config.sessionPolicy?.source === 'share' && !this.config.sessionPolicy.allowSftp) {
-      this.sendSFTPError(this.getSFTPOperation(msg.type), '当前分享会话不允许使用 SFTP');
+      this.sendSFTPError(this.getSFTPOperation(msg.type), '当前分享会话不允许使用 SFTP', requestId);
       return;
     }
 
@@ -2310,7 +2337,7 @@ export class SSHSession {
     }
 
     if (!this.sftpHandler) {
-      this.sendSFTPError(this.getSFTPOperation(msg.type), 'SFTP 未初始化，请先发送 sftp_init');
+      this.sendSFTPError(this.getSFTPOperation(msg.type), 'SFTP 未初始化，请先发送 sftp_init', requestId);
       return;
     }
 
@@ -2321,7 +2348,7 @@ export class SSHSession {
         await this.sftpHandler.listDirectory(msg.path || '.');
         break;
       case 'sftp_stat':
-        await this.sftpHandler.stat(msg.path);
+        await this.sftpHandler.stat(msg.path, requestId);
         break;
       case 'sftp_download':
         await this.sftpHandler.downloadFile(msg.path);
@@ -2532,8 +2559,13 @@ export class SSHSession {
     );
   }
 
-  private sendSFTPError(operation: string, message: string): void {
-    this.sendSFTPJSON({ type: 'sftp_error', operation, message });
+  private sendSFTPError(operation: string, message: string, requestId?: string): void {
+    this.sendSFTPJSON({
+      type: 'sftp_error',
+      operation,
+      message,
+      ...(requestId ? { requestId } : {}),
+    });
   }
 
   private sendSFTPJSON(msg: any): void {
@@ -2971,6 +3003,7 @@ export class SSHSession {
         this.sendAgentFrame({
           type: 'agent_frame',
           subType: 'error',
+          code: 'agent_busy',
           message: 'Agent 正在运行中，请先停止当前任务',
         });
         return;
@@ -3016,6 +3049,20 @@ export class SSHSession {
         ? requestedTimezone
         : undefined;
     void this.agentCore.handleAgentStart(effectiveUserId, userMessage, locale, timezone, userIndex, requestId);
+  }
+
+  private sendAgentState(syncId: unknown): void {
+    if (this.closed || this.isDetached() || !this.userId || this.config.sessionPolicy?.source === 'share' ||
+      (this.state !== 'ready' && this.state !== 'rekey') ||
+      typeof syncId !== 'string' || !syncId || syncId.length > 64) return;
+    const state = this.agentCore?.getSessionState() ?? emptyAgentSessionState();
+    const pending = this.pendingAgentConfirmation;
+    if (pending) {
+      state.phase = 'waiting_confirmation';
+      state.confirmation = { confirmationId: pending.id, command: pending.command, reason: pending.reason };
+    }
+    // Read-only synchronization is neither user activity nor task execution.
+    this.sendAgentFrame({ type: 'agent_frame', subType: 'state', syncId, state });
   }
 
   /**
@@ -3212,7 +3259,7 @@ export class SSHSession {
       const onAbort = () => {
         if (this.pendingAgentConfirmation?.id === id) this.finishAgentConfirmation(false);
       };
-      this.pendingAgentConfirmation = { id, command, resolve, signal, onAbort };
+      this.pendingAgentConfirmation = { id, command, reason, resolve, signal, onAbort };
       signal?.addEventListener('abort', onAbort, { once: true });
       this.sendAgentFrame({
         type: 'agent_frame', subType: 'confirm_required', confirmationId: id, command, reason,
@@ -3440,6 +3487,7 @@ export class SSHSession {
     this.closed = true;
     this.packetParser.clear();
     this.versionRawBuffer = new Uint8Array(0);
+    this.versionPreambleBytes = 0;
     this.terminalOutputGuard.dispose();
     this.detachedBuffer.clear();
     this.notifyShareSessionClosed(normal);
