@@ -1,4 +1,7 @@
 import { normalizeAIBaseUrl } from '../ai-endpoint';
+import { McpStore } from './mcp-store';
+import { executionName } from './mcp-auth';
+import type { McpActivity } from '../mcp-schema';
 import { resolveModelBudget } from '../ai-model-policy';
 import { ServerMemoryStore } from './server-memory-store';
 import { distillMemory } from './agent/memory';
@@ -16,7 +19,7 @@ import {
 import { CF_ACCESS_USER_GITHUB_ID, LOCAL_ADMIN_GITHUB_ID, getAccessUserRouteKey } from './auth';
 import { inferLocationHint } from './ip-geo';
 import { isDetectedOS } from './os-detect';
-import { deserializeServerRow, serializeServerTags } from './server-tags';
+import { deserializeServerRow, parseStoredServerTags, serializeServerTags } from './server-tags';
 import { isValidTunnelHostname } from './tunnel-stream';
 import { extractPrivateKeyAndCertificate } from '../ssh/user-cert';
 import { sanitizeTeamName } from './cf-ssh-ca';
@@ -129,6 +132,9 @@ type AIConfigSecretRow = AIBudgetRow & { base_url: string; model: string; api_ke
  * - One-time-token 生成与消费（安全传递凭据）
  */
 export class UserDBDO {
+  private mcpStore: McpStore;
+  private alarmSchedule: Promise<void> = Promise.resolve();
+  private mcpState: DurableObjectState;
   private env: Env;
   private db: any; // SqlStorage (DO SQLite)
   // one-time-token 内存存储：token → { config, expiresAt }
@@ -141,23 +147,46 @@ export class UserDBDO {
 
   constructor(state: DurableObjectState, env: Env) {
     this.env = env;
+    this.mcpState = state;
     this.db = (state.storage as any).sql;
     this.initSchema();
+    this.mcpStore = new McpStore(this.db,
+      (value, userId) => this.encryptCredential(value, userId),
+      (value, userId) => this.decryptCredential(value, userId));
     this.memoryStore = new ServerMemoryStore(this.db,
       callback => typeof (state.storage as any).transactionSync === 'function'
         ? (state.storage as any).transactionSync(callback) : callback(),
       (value, userId) => this.encryptCredential(value, userId),
       (value, userId) => this.decryptCredential(value, userId),
-      async at => { if (typeof state.storage.setAlarm === 'function') await state.storage.setAlarm(at); });
+      async at => { await this.scheduleMcpAlarm(at); });
     // Old pending rows become recoverable after deployment/reconstruction, without a live SSH tab.
     if (typeof state.blockConcurrencyWhile === 'function') {
-      state.blockConcurrencyWhile(() => this.memoryStore.rearm());
+      state.blockConcurrencyWhile(async () => {
+        await this.memoryStore.rearm();
+        await this.scheduleMcpAlarm();
+      });
     }
   }
 
   async alarm(): Promise<void> {
     if (!this.memoryRun) this.memoryRun = this.processMemoryTask().finally(() => { this.memoryRun = null; });
-    await this.memoryRun;
+    try { await this.memoryRun; }
+    finally { await this.scheduleMcpAlarm(); }
+  }
+
+  /** Keep the earliest memory or activity deadline; no second background queue. */
+  private scheduleMcpAlarm(memoryDue?: number): Promise<void> {
+    const work = async () => {
+      const storage = this.mcpState.storage;
+      const cleanupDue = this.mcpStore.cleanup();
+      if (typeof storage.setAlarm !== 'function') return;
+      const current = typeof storage.getAlarm === 'function' ? await storage.getAlarm() : null;
+      const due = [cleanupDue, memoryDue, current].filter((value): value is number => value != null);
+      if (due.length) await storage.setAlarm(Math.max(Date.now() + 1, Math.min(...due)));
+    };
+    const scheduled = this.alarmSchedule.then(work);
+    this.alarmSchedule = scheduled.catch(() => {});
+    return scheduled;
   }
 
   private async processMemoryTask(): Promise<void> {
@@ -427,6 +456,10 @@ export class UserDBDO {
       const url = new URL(request.url);
       const path = url.pathname;
 
+      if (path === '/internal/mcp' && request.method === 'POST') {
+        return await this.handleMcp(request);
+      }
+
       // --- 用户管理 ---
       if (path === '/internal/oauth-user' && request.method === 'POST') {
         return this.handleOAuthUser(request);
@@ -477,7 +510,7 @@ export class UserDBDO {
       if (serverMatch) {
         const serverId = parseInt(serverMatch[1], 10);
         if (request.method === 'PUT') return await this.handleUpdateServer(serverId, request);
-        if (request.method === 'DELETE') return this.handleDeleteServer(serverId, request);
+        if (request.method === 'DELETE') return await this.handleDeleteServer(serverId, request);
       }
 
       // /internal/servers/:id/connect
@@ -968,7 +1001,9 @@ export class UserDBDO {
       userId
     );
 
-    return Response.json(rows.map((row) => formatServerResponse(row)));
+    return Response.json(rows.map((row) => formatServerResponse(row)), {
+      headers: { 'Cache-Control': 'private, no-store' },
+    });
   }
 
   private validateJumpChain(
@@ -1444,7 +1479,6 @@ export class UserDBDO {
       updates.push("updated_at = datetime('now')");
       values.push(serverId);
       // SET 片段仅来自本函数硬编码白名单（列名 + '?' 或固定字面量），动态值全部经 values 参数绑定
-      // pi-lens-ignore: sql-injection
       this.db.exec(`UPDATE servers SET ${updates.join(', ')} WHERE id = ?`, ...values);
     }
 
@@ -1498,20 +1532,28 @@ export class UserDBDO {
       );
     }
 
-    try {
-      this.db.exec('DELETE FROM server_memories WHERE server_id = ?', serverId);
-    } catch {
-      /* ignore if legacy table was already dropped */
+    // No await between the ownership/share/jump checks and the commit. Retain route-scoped
+    // known_hosts (other entries may use them) and terminal share audit metadata.
+    const pool = this.mcpState.storage.transactionSync(() => {
+      this.memoryStore.cleanup(serverId, ownerUserId);
+      this.db.exec('DELETE FROM servers WHERE id = ? AND user_id = ?', serverId, ownerUserId);
+      this.mcpStore.pruneMissingServers(ownerUserId);
+      return this.mcpStore.executionPool(ownerUserId);
+    });
+    for (const [token, { config }] of this.connectTokens) {
+      if (config.userId === String(ownerUserId) &&
+          (config.serverId === serverId || config.jumpHosts?.some((hop) => hop.serverId === serverId))) {
+        this.connectTokens.delete(token);
+      }
     }
-    try {
-      this.db.exec('DELETE FROM server_task_checkpoints WHERE server_id = ?', serverId);
-    } catch {
-      /* ignore */
+    const execution = this.env.MCP_EXECUTION;
+    if (pool && execution) {
+      try {
+        await execution.get(execution.idFromName(executionName(pool))).fetch(
+          new Request(`https://internal/invalidate/${serverId}`, { method: 'POST', signal: AbortSignal.timeout(4000) })
+        );
+      } catch { /* Already committed; subsequent calls recheck grants. Idle pools expire. */ }
     }
-    this.db.exec('DELETE FROM server_work_logs WHERE server_id = ?', serverId);
-    this.db.exec('DELETE FROM server_knowledge WHERE server_id = ?', serverId);
-    this.memoryStore.cleanup(serverId);
-    this.db.exec('DELETE FROM servers WHERE id = ?', serverId);
     return Response.json({ success: true });
   }
 
@@ -2020,7 +2062,7 @@ export class UserDBDO {
 
   // ==================== One-time-token 连接 ====================
 
-  private async handleConnectServer(serverId: number, request: Request): Promise<Response> {
+  private async handleConnectServer(serverId: number, request: Request, configOnly = false): Promise<Response> {
     const body = await request.json<{ user_id: number; ephemeralCredential?: string; routeKey?: string }>();
 
     // Resolve the saved relation into one bounded, immutable outer-to-target chain.
@@ -2046,6 +2088,9 @@ export class UserDBDO {
 
     const chain = reversed.reverse();
     const target = chain[chain.length - 1];
+    if (configOnly && chain.some(server => server.cf_ssh_ca_team)) {
+      return Response.json({ error: 'interactive_auth_required' }, { status: 409 });
+    }
     const pathSegments: string[] = [];
     const resolved = await Promise.all(
       chain.map(async (server, index) => {
@@ -2072,10 +2117,13 @@ export class UserDBDO {
       })
     );
 
+    if (configOnly && resolved.some(node => !node.expectedFingerprint)) {
+      return Response.json({ error: 'host_verification_required' }, { status: 409 });
+    }
     const outermost = chain[0];
     const locationHint = outermost.region || outermost.inferred_hint || undefined;
 
-    this.db.exec('UPDATE servers SET last_connected_at = ? WHERE id = ?', Date.now(), serverId);
+    if (!configOnly) this.db.exec('UPDATE servers SET last_connected_at = ? WHERE id = ?', Date.now(), serverId);
 
     const userRows = this.db
       .exec('SELECT github_id FROM users WHERE id = ?', body.user_id)
@@ -2166,6 +2214,13 @@ export class UserDBDO {
       cfAccessClientSecret: isTunnel ? cfAccessClientSecret : undefined,
     };
 
+    // Decryption and Access routing yielded above. A deletion during either must not issue
+    // fresh credentials/a browser ticket after the deletion already cleared pending tickets.
+    if (chain.some(({ id }) => this.one<UserIdRow>('SELECT user_id FROM servers WHERE id = ?', id)?.user_id !== body.user_id)) {
+      return Response.json({ error: 'Server not found' }, { status: 404 });
+    }
+    if (configOnly) return Response.json(config);
+
     // 防止 token 数量无限增长
     if (this.connectTokens.size >= UserDBDO.MAX_CONNECT_TOKENS) {
       this.cleanExpiredTokens();
@@ -2181,6 +2236,55 @@ export class UserDBDO {
     });
 
     return Response.json({ token });
+  }
+
+  private async handleMcp(request: Request): Promise<Response> {
+    const body = await request.json<{ action: string; userId: number; routeKey: string; modeTag: string;
+      token: string; id: string; input: unknown; serverId: number; activity: McpActivity }>();
+    const store = this.mcpStore;
+    if (['settings', 'create', 'update', 'credentials'].includes(body.action)) {
+      try {
+        if (body.action === 'settings') return Response.json(store.get(body.userId, body.routeKey, body.modeTag));
+        if (body.action === 'credentials') return Response.json(await store.credentials(body.userId, body.routeKey, body.modeTag));
+        return Response.json(await store[body.action === 'create' ? 'create' : 'update'](body.userId, body.routeKey, body.modeTag, body.input));
+      } catch { return Response.json({ error: 'invalid_mcp_configuration' }, { status: 400 }); }
+    }
+    if (body.action === 'activity') return Response.json(store.activity(body.userId));
+    if (body.action === 'owns_server') {
+      const owned = this.one('SELECT id FROM servers WHERE id = ? AND user_id = ?', body.serverId, body.userId);
+      return new Response(null, { status: owned ? 204 : 404 });
+    }
+    // This internal route is reachable only via a DO binding, never a public URL.
+    if (body.action === 'record') {
+      store.record(body.userId, body.activity);
+      await this.scheduleMcpAlarm();
+      return Response.json({ success: true });
+    }
+    const principal = await store.verify(body.token, body.modeTag);
+    if (!principal) return Response.json({ error: 'unauthorized' }, { status: 401 });
+    if (body.action === 'authorize' && !store.consumeRequest(principal.id)) {
+      return Response.json({ error: 'rate_limited' }, { status: 429 });
+    }
+    if (body.action === 'verify' || body.action === 'authorize') return Response.json(principal);
+    if (body.action === 'servers') {
+      this.ensureCfSshCaTeamColumn();
+      // Read current grants and live, same-owner servers together; never list a grant snapshot.
+      const rows = this.query<Pick<ServerRow, 'id' | 'name' | 'tags' | 'os' | 'cf_ssh_ca_team'>>(
+        `SELECT s.id, s.name, s.tags, s.os, s.cf_ssh_ca_team FROM mcp_configs c
+         JOIN json_each(c.grants) g JOIN servers s ON s.id = json_extract(g.value, '$.serverId') AND s.user_id = c.user_id
+         WHERE c.user_id = ? AND c.id = ? AND c.mode_tag = ? AND c.route_key = ?
+         ORDER BY (s.last_connected_at IS NULL) ASC, s.last_connected_at DESC, s.updated_at DESC`,
+        principal.userId, principal.id, principal.modeTag, principal.routeKey
+      );
+      return Response.json(rows.map(({ id, name, tags, os, cf_ssh_ca_team }) =>
+        ({ id, name, tags: parseStoredServerTags(tags), os, unattended: !cf_ssh_ca_team })));
+    }
+    if (body.action === 'config' && principal.serverIds.includes(body.serverId)) {
+      this.ensureCfSshCaTeamColumn();
+      return this.handleConnectServer(body.serverId, new Request('http://internal/config', { method: 'POST',
+        body: JSON.stringify({ user_id: principal.userId, routeKey: principal.routeKey }) }), true);
+    }
+    return Response.json({ error: 'forbidden' }, { status: 403 });
   }
 
   private async handleConsumeToken(request: Request): Promise<Response> {

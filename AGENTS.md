@@ -7,14 +7,13 @@
   - package.json / frontend/package.json (版本同步、依赖、脚本命令)
   - src/types.ts (Env 接口、类型定义)
   - biome.json (代码格式与 lint 约定)
-  - .pi-lens.json (pi-lens 项目策略：规则禁用与豁免口径，见 #31)
 -->
 
 ## Project Overview
 
 CloudSSH is a serverless Web SSH terminal built on Cloudflare Workers. Users connect to SSH servers through a browser-based terminal UI with integrated SFTP file management and AI Agent assistant.
 
-当前版本：`2.10.4`；根目录与 `frontend/package.json` 版本必须同步，更新说明见 `CHANGELOG.md`。
+当前版本：`2.11.3`；根目录与 `frontend/package.json` 版本必须同步，更新说明见 `CHANGELOG.md`。
 
 ## Architecture
 
@@ -49,6 +48,9 @@ src/
 │   ├── server-tags.ts # 服务器标签规范化与 SQLite JSON 序列化
 │   ├── os-detect.ts  # 远端操作系统输出解析、规范 key 与持久化白名单
 │   ├── auth.ts       # 认证模式解析（单管理员密码/GitHub 互斥）+ OAuth 流程 + Session 中间件 + 密码登录
+│   ├── mcp.ts / mcp-auth.ts / mcp-tools.ts # 无状态 MCP、个人 Token 入口与工具 schema
+│   ├── mcp-execution.ts # MCPExecutionDO：无头 exec/SFTP 与短空闲有界连接池
+│   ├── mcp-store.ts / mcp-sftp.ts # Token 摘要、近期活动与有界文本文件操作
 │   ├── cf-ssh-ca.ts  # Cloudflare Zero Trust SSH CA 证书签发代理
 │   ├── dns-check.ts  # DNS-over-HTTPS 解析 + 统一 IP 块检查（DNS rebinding 防重绑定 SSRF 防护）
 │   ├── ip-geo.ts     # 保存直连服务器时 IPinfo 区域推断，映射为 DO locationHint
@@ -88,6 +90,7 @@ src/
 │   ├── sftp-reader.ts # SFTP v3 长度先校验的有界字段游标
 │   └── sftp-types.ts # SFTP protocol constants and types
 ├── version.ts        # 构建版本、稳定版语义比较与更新检测共享常量
+├── mcp-schema.ts     # 个人 MCP 权限、预算、Token 输入与有界请求读取
 ├── ai-endpoint.ts    # Responses API 根地址校验与规范化纯函数
 ├── ai-model-policy.ts # 前后端共享的模型上下文/输出 Token 预算与范围校验
 ├── agent-response-diagnostics.ts # 调用阶段、参数、错误码与本地请求 UUID 的共享诊断白名单
@@ -107,7 +110,9 @@ frontend/
 │   ├── app-bootstrap.ts   # 首屏配置/身份并行读取、10s 超时与失败关闭，确认后一次展示正确页面
 │   ├── version-notice.ts  # 非阻塞版本检测、缓存与可忽略的三语页脚提示
 │   ├── terminal.ts        # xterm.js terminal setup (search, dynamic RTT latency, log export, 选区->Agent)
-│   ├── terminal-layout.ts # 响应式终端字体与视口尺寸（桌面/平板/移动）
+│   ├── terminal-layout.ts # 响应式终端字体与本机 12–18px/自动字号偏好
+│   ├── terminal-selection.ts # xterm 公开API触摸选区端点、宽字符对齐与有界本地边缘滚动
+│   ├── manual-paste-dialog.ts # 剪贴板读取失败时的会话绑定手动粘贴（64Ki字符、临时文本销毁）
 │   ├── terminal-status.ts # SSH 状态事件 → i18n 文案翻译与状态栏渲染
 │   ├── terminal-output-ack.ts # 当前 WebSocket 代际的累计字节接收确认（16ms 合并，不代表渲染完成）
 │   ├── terminal-text.ts   # 终端等宽文本宽度计算（CJK 全角/Emoji 占 2 列）
@@ -160,6 +165,13 @@ frontend/
 │   ├── snippet-manager.ts # 命令片段库面板（云端/本地双后端、参数占位符录入、搜索/复制、填入/填入并执行、编辑/删除）
 │   ├── snippet-variables.ts # 命令片段 {{var}} 参数占位符提取与安全替换纯函数
 │   ├── snippet-store.ts   # 片段存储层（RemoteSnippetStore + LocalSnippetStore + 错误映射）
+│   ├── mcp-manager.ts / mcp-manager.css # 外部助手 Token 管理、Access 专属接入引导、终端输出共享与近期活动
+│   ├── mcp-client-config.ts # 双层认证配置组装，账户凭据加密回读后显式复制
+│   ├── assistant-icons.ts # 内置 AI 对话星芒 / 外部 MCP 连接节点的固定 SVG 几何与 DOM 渲染
+│   ├── assistant-ui.css # Agent/MCP 共用面板、标题栏、输入、按钮和页脚组件
+│   ├── mcp-config-draft.ts # 每个设置窗口独立的完整授权草稿、已保存基线与变更台数
+│   ├── mcp-permission-editor.ts # 授权摘要、名称/标签搜索、按已保存权限筛选及桌面表格/手机逐行展开
+│   ├── server-removal.ts # 经服务端确认的删除通知，仅在同源同账户打开的设置视图移除关联行
 │   ├── ai-config.ts       # AI model configuration modal (Combobox 下拉、免密安全拉取与主题自适应)
 │   ├── i18n/
 │   │   ├── index.ts        # 语言解析、词条查询（t）与 locale 变更通知
@@ -243,7 +255,7 @@ The frontend is **NOT** served separately in production. The build process:
 
 ## Durable Objects
 
-Three Durable Objects handle state:
+Four Durable Objects handle state:
 
 1. **SSHSessionDO** (`src/worker/durable-object.ts`)
    - Manages WebSocket ↔ TCP socket connections
@@ -257,6 +269,11 @@ Three Durable Objects handle state:
 3. **SSHShareDO** (`src/worker/share-do.ts`)
    - Owns one random capability's one-time claim, short-lived connection ticket, expiry, and revocation state
    - Stores the append-only lifecycle, SFTP, and terminal-output audit log for that share session
+
+4. **MCPExecutionDO** (`src/worker/mcp-execution.ts`)
+   - Each personal token owns an isolated pool of at most two headless SSH connections
+   - One operation per server, no unbounded queue; idle connections expire through Alarm after about 60 seconds
+   - Bound via `MCP_EXECUTION` in both environments; append-only SQLite migration `v3`
 
 ## Environment Variables
 
@@ -285,7 +302,7 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/auth/me` | GET | Yes | Returns current user info |
 | `/api/auth/password/login` | POST | No | 单管理员密码登录（密码模式专用；同源 Origin 校验 + Turnstile 可选 + DO 持久化节流 + 恒时比对） |
 | `/api/servers` | GET/POST | Yes | List or create saved servers（含 `tags` 与可选 `jump_server_id`） |
-| `/api/servers/:id` | PUT/DELETE | Yes | Update or delete a server（含标签和跳板关系校验） |
+| `/api/servers/:id` | PUT/DELETE | Yes | 更新或删除服务器；删除受所有权、跳板和分享门控，事务清理该服务器的记忆、MCP 授权及近期操作 |
 | `/api/servers/:id/connect` | POST | Yes | Generate one-time-token, return WebSocket URL |
 | `/api/servers/:id/memory` | GET | Yes | Read unified server memory (work logs & context knowledge) |
 | `/api/servers/:id/work-logs` | POST | Yes | Create a server work log entry |
@@ -311,6 +328,11 @@ Required for optional features (configured in `wrangler.toml` or Cloudflare Dash
 | `/api/version` | GET | No | 官方 main 最新稳定版本（缓存元数据，失败返回 latestVersion: null） |
 | `/api/config` | GET | No | Feature flags (turnstile, GitHub auth enabled) |
 | `/api/cf-ssh-ca/sign` | POST | Same-Origin | Cloudflare Zero Trust 原生 SSH CA 证书签发代理 |
+| `/mcp` | POST | Personal Bearer Token | 无状态 Streamable HTTP：server_list / ssh_exec / sftp_list / sftp_read / sftp_write / session_output；GET/DELETE 返回 405 |
+| `/api/mcp/config` | GET/POST/PUT | Yes | 唯一配置元数据、首次幂等生成或修改逐服务器权限；无到期/撤销 |
+| `/api/mcp/config/credentials` | POST | Yes | 所有者明确复制/查看时解密返回保存的凭据，普通GET不下发 |
+| `/api/mcp/context` | POST | Yes | 所有者主动开启/关闭或查询单标签页最近输出共享 |
+| `/api/mcp/activity` | GET | Yes | 有界近期活动摘要，不含命令/输出，不是审计 |
 
 ## Testing
 
@@ -389,9 +411,9 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 14. **Agent terminal selection context** - “Ask AI assistant” attaches one immutable selection snapshot per tab and never sends it by itself. New selections replace the pending snapshot; successful sends and session teardown clear it. Preserve the untrusted-data/non-authorization boundary in `terminal-selection-context.ts`.
 15. **Region inference privacy** - Saving or changing a Cloudflare-direct server host calls the third-party IPinfo service and persists the inferred locationHint. Servers with `jump_server_id` are downstream nodes: never query their hosts, ignore and clear their own region hints, and infer once if they later become direct Auto entries. Keep the provider name and disclosure synchronized across README/code comments; failures must continue to fall back to Cloudflare's default placement.
 16. **Theme editor ownership** - The full visual editor and JSON export live in `docs/theme-editor/index.html` for GitHub Pages and never authenticate against CloudSSH. `scripts/sync-theme-editor.js` keeps its built-in colors, resolved appearance presets, background layers and effect presets aligned with `frontend/src/theme.ts`; the application and Worker share Theme V4 validation through `src/theme-schema.ts` (appearance enums + V3 background/effects/typography modules, all declarative and whitelist-validated). The application supports uploading and managing multiple custom themes (up to 20, each ≤64KB), synchronizing via `/api/user/theme` (GET/PUT/DELETE) for signed-in users, while anonymous themes remain local in `localStorage`. 自定义主题多套管理与分段条常驻：分段控制器默认常驻 5 项（4 个内置 + 1 个 Custom），移除了独立上传按钮；点击 Custom 时若检测到未上传过主题则呼出管理弹窗引导上传，已有主题时直接应用当前活跃主题，已激活状态下再次点击 Custom 按钮唤起管理弹窗（支持多套主题预览切换、新主题拖拽/点击上传、单个主题确认删除）；切换到内置主题时保留已上传的主题库资产，仅在用户主动删除主题时同步删除（支持 `DELETE /api/user/theme?id=xxx`）；当全部自定义主题被删除时自动优雅回退至默认内置主题。V3 effect/background layers are driven by CSS variables and data attributes only — no user CSS/JS is ever evaluated, and background gradients compose exclusively from whitelist-validated color stops.
-17. **Mobile terminal input and recovery** - Mobile shortcuts and the iOS keyCode 229 fallback must continue through `TrzszFilter.processTerminalInput`; never send them directly to the WebSocket, and do not permit any terminal input until `shell_ready`. For iOS IME fallback, capture the textarea baseline on `keydown=229` but flush on the corresponding `keyup` regardless of its key code, since Safari commonly reports 32 for Space and 0 for punctuation; during IME composition, suppress fallback baseline capture and diff flushing so in-flight pinyin syllables are not dispatched to the terminal, and reset state on compositionend or blur; xterm `onData` remains authoritative to prevent duplicate input. Track composition on desktop/macOS too: IME confirmation Enter must be blocked through xterm's custom key handler (including its keypress/keyup cycle), without preventing the browser's candidate selection. Agent main/inline inputs, tab renaming and text dialogs use composition state + `isComposing` + Safari's legacy `keyCode=229` guard; retain 229 despite its deprecated status. Do not use 50/100ms post-composition input suppression: it can drop immediate punctuation or intentional Enter. IME E2E uses synthetic events with real xterm/onData/trzsz routing and does not replace native Apple IME device testing. Exact DECSET 1004 focus reports (`ESC[I` / `ESC[O`) emitted by xterm must be sent unchanged through the same Shell-ready/trzsz pipeline without consuming Ctrl/Alt or setting `imePendingHandled`; do not classify arbitrary ESC-prefixed keyboard/paste sequences as reports. Keep the explicit mobile selection mode isolated from desktop mouse auto-copy, map touch drags through xterm's public selection API instead of native long-press selection, and debounce visual viewport refits. Touch scrolling in wheel-capable mouse tracking modes (e.g. tmux) must dispatch bounded wheel events through xterm's negotiated mouse encoding and the existing trzsz path, anchored to the original pane; never hard-code SGR, fall back to arrow keys, consume pending Ctrl/Alt, or bypass Shell-ready gating. Preserve normal-buffer local scrollback and selection-mode priority, and terminate gestures on mode/connection changes. Enable background-return visibility recovery only when the device has touch points and a coarse primary pointer, so desktop tab changes do not emit recovery logs or probes. A mobile background return must validate the WebSocket with a bounded ID-matched heartbeat instead of trusting `readyState`; anonymous reconnects may reuse only the current in-memory config, while saved-server reconnects must request a fresh one-time token from `/api/servers/:id/connect`. Never report a connection as online before the replacement Shell is ready.
+17. **Mobile terminal input and recovery** - Mobile shortcuts and the iOS keyCode 229 fallback must continue through `TrzszFilter.processTerminalInput`; never send them directly to the WebSocket, and do not permit any terminal input until `shell_ready`. For iOS IME fallback, capture the textarea baseline on `keydown=229` but flush on the corresponding `keyup` regardless of its key code, since Safari commonly reports 32 for Space and 0 for punctuation; during IME composition, suppress fallback baseline capture and diff flushing so in-flight pinyin syllables are not dispatched to the terminal, and reset state on compositionend or blur; xterm `onData` remains authoritative to prevent duplicate input. Track composition on desktop/macOS too: IME confirmation Enter must be blocked through xterm's custom key handler (including its keypress/keyup cycle), without preventing the browser's candidate selection. Agent main/inline inputs, tab renaming and text dialogs use composition state + `isComposing` + Safari's legacy `keyCode=229` guard; retain 229 despite its deprecated status. Do not use 50/100ms post-composition input suppression: it can drop immediate punctuation or intentional Enter. IME E2E uses synthetic events with real xterm/onData/trzsz routing and does not replace native Apple IME device testing. Exact DECSET 1004 focus reports (`ESC[I` / `ESC[O`) emitted by xterm must be sent unchanged through the same Shell-ready/trzsz pipeline without consuming Ctrl/Alt or setting `imePendingHandled`; do not classify arbitrary ESC-prefixed keyboard/paste sequences as reports. Keep the explicit mobile selection mode isolated from desktop mouse auto-copy, map touch drags through xterm's public selection API instead of native long-press selection, and debounce visual viewport refits. Capture the initial viewport height synchronously before the first animation frame; invalidate a pending fit immediately on viewport notification, not only when a delayed frame runs. Fits must not execute with a viewport frame pending or after leaving the terminal; orientation changes still reset the height baseline. Touch scrolling in wheel-capable mouse tracking modes (e.g. tmux) must dispatch bounded wheel events through xterm's negotiated mouse encoding and the existing trzsz path, anchored to the original pane; never hard-code SGR, fall back to arrow keys, consume pending Ctrl/Alt, or bypass Shell-ready gating. Preserve normal-buffer local scrollback and selection-mode priority, and terminate gestures on mode/connection changes. Enable background-return visibility recovery only when the device has touch points and a coarse primary pointer, so desktop tab changes do not emit recovery logs or probes. A mobile background return must validate the WebSocket with a bounded ID-matched heartbeat instead of trusting `readyState`; anonymous reconnects may reuse only the current in-memory config, while saved-server reconnects must request a fresh one-time token from `/api/servers/:id/connect`. Never report a connection as online before the replacement Shell is ready.
 18. **Saved-server OS detection** - Run OS detection only for signed-in saved servers without a persisted result, through a separate non-blocking SSH exec channel after Shell readiness. Never persist `unknown`; host or port changes must clear the stored OS, and background metadata updates must not change `updated_at` or server ordering. Keep backend canonical keys synchronized with frontend labels/icon fallbacks.
-19. **Keyboard-interactive authentication** - Begin user authentication with the RFC 4252 `none` probe and choose only methods advertised by the server, while retaining the bounded compatibility fallback for servers that omit the list. RFC 4256 challenges are event-driven during the SSH auth state. Keep method-specific message type 60 disambiguated by the active auth method, use `partial_success` to advance bounded multi-factor stages, and only fall back without partial success when the server no longer offers the configured primary method. Bind browser responses and `auth_challenge_ack` display acknowledgements to one random challenge ID and originating WebSocket, distinguish an undisplayed challenge from an acknowledged but unanswered challenge, never log responses, clear pending challenges on timeout/reconnect/close, require explicit user action before substituting a stored password, and close authentication timeouts normally so older frontends cannot reconnect repeatedly. Treat ordinary server-side credential rejection as an expected close rather than WebSocket error 1011. A configured public key may prompt for an additional password ONLY after server partial_success and an advertised password method; keep method-bound pending challenges so the submitted response becomes RFC 4252 password, never RFC 4256 INFO_RESPONSE. Do not reuse/store a primary password or prompt on ordinary key rejection. Share sessions and intermediate hops with interactive auth disabled must not prompt.
+19. **Keyboard-interactive authentication** - Begin user authentication with the RFC 4252 `none` probe and choose only methods advertised by the server, while retaining the bounded compatibility fallback for servers that omit the list. RFC 4256 challenges are event-driven during the SSH auth state. Challenge dialogs use native autofocus for the first prompt (or Continue for zero prompts); a delayed focus fallback must preserve focus already inside the dialog, including a different prompt or Cancel. Keep method-specific message type 60 disambiguated by the active auth method, use `partial_success` to advance bounded multi-factor stages, and only fall back without partial success when the server no longer offers the configured primary method. Bind browser responses and `auth_challenge_ack` display acknowledgements to one random challenge ID and originating WebSocket, distinguish an undisplayed challenge from an acknowledged but unanswered challenge, never log responses, clear pending challenges on timeout/reconnect/close, require explicit user action before substituting a stored password, and close authentication timeouts normally so older frontends cannot reconnect repeatedly. Treat ordinary server-side credential rejection as an expected close rather than WebSocket error 1011. A configured public key may prompt for an additional password ONLY after server partial_success and an advertised password method; keep method-bound pending challenges so the submitted response becomes RFC 4252 password, never RFC 4256 INFO_RESPONSE. Do not reuse/store a primary password or prompt on ordinary key rejection. Share sessions and intermediate hops with interactive auth disabled must not prompt.
 20. **WebSocket origin boundary** - `/api/ssh` (anonymous and one-time-token paths) and `/api/ssh/sftp` are browser-only, same-origin endpoints. Reject WebSocket upgrades when `Origin` is missing or differs from the request URL origin, and keep regression coverage synchronized across all three paths. 所有 `/api/` 写请求（非 GET/HEAD/OPTIONS）若显式携带不同源的 `Origin`，必须在认证与副作用前返回 403；无 Origin 的现有脚本客户端仍兼容，密码登录等既有强制 Origin 路径不放宽。
 21. **GitHub access policy** - `GITHUB_ALLOWED_USER_IDS` contains stable numeric GitHub IDs and is rechecked during OAuth callback and every session verification; omitted means unrestricted, while an empty or malformed configured value fails closed. `REQUIRE_GITHUB_AUTH=true` disables anonymous SSH and requires a valid session for direct and one-time-token SSH upgrades, but does not terminate already established WebSockets. Never expose the allowlist through `/api/config`.
 22. **SSH jump chains** - Jump hosts are available only to signed-in users through saved-server `jump_server_id` relations. Resolve one immutable outer-to-target chain in UserDBDO, reject cross-user references, cycles, deletion of referenced hops, and more than 3 jump hosts. Apply public-address SSRF checks only to the outermost Cloudflare TCP destination; anonymous clients must never inject `jumpHosts`. Every intermediate SSHSession authenticates without opening a Shell and exposes only RFC 4254 `direct-tcpip`; terminal, SFTP, Agent exec, and OS detection belong to the final session. Preserve nested channel backpressure, close the full chain on any-hop failure, and scope known-host identities by the complete route so equal private addresses behind different bastions do not collide. `DirectTcpipStream` 的远端 EOF/正常 CLOSE 必须先排空已收到但尚未消费的数据，再关闭读取流；远端错误或本地取消才立即丢弃，结束后不再补接收窗口，避免尾包丢失和重复关闭。
@@ -408,11 +430,11 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 
 28. **Frontend i18n** - 所有面向用户的文案走 `frontend/src/i18n` 的 `t()` / `data-i18n` / `data-i18n-title` / `data-i18n-placeholder` 管线并同步 `locales/zh-CN.ts`、`zh-TW.ts` 与 `en-US.ts`；语言解析支持 URL 参数、localStorage（`cloudssh_locale`）与浏览器语言回退。新增文案时保持多端词条对齐，勿硬编码中文到模板字符串。
 
-29. **CI paths-ignore 作用域** - `deploy.yml` 当前使用 `**/*.md` 与 `**/*.png` 等跨目录模式，因此仅修改根目录或 `tests/` 等子目录 Markdown/图片均不会触发部署。标准 glob 中 `*` 不匹配 `/`，若将来改回 `*.md` 则仅覆盖根目录，不能沿用当前跨目录口径。修改 `deploy.yml` 本身会触发校验运行。
+29. **CI paths-ignore 作用域** - `deploy.yml` 的 push 触发当前使用 `**/*.md` 与 `**/*.png` 等跨目录模式，因此仅修改根目录或 `tests/` 等子目录 Markdown/图片均不会触发部署。标准 glob 中 `*` 不匹配 `/`，若将来改回 `*.md` 则仅覆盖根目录，不能沿用当前跨目录口径。修改 `deploy.yml` 本身会触发校验运行。PR（目标 test/main）不做 paths-ignore，避免文档 PR 因跳过必需检查而永久 pending；手动触发同样只验证。只有 test/main 的 push 可注入部署 Secrets 并部署，不能凭分支名让 workflow_dispatch 部署。 Cloudflare Git 集成的构建路径过滤独立于 GitHub Actions，须在 Worker 的 Settings → Build → Build watch paths 配置；仓库中的忽略文件不能替代该设置。
 
 30. **Agent exec 输出有界性（弱网 OOM 防线）** - `AgentExecChannel` 对 exec 通道 stdout/stderr 执行有界捕获：合计 4MB 硬上限（`MAX_EXEC_CAPTURE_BYTES`，超限不再续 SSH window 并由会话层关闭通道击杀远端命令，如无界输出的 `docker logs`），保留头 128KB + 尾 256KB 环形视图并附加截断说明，`onData/onExtendedData` 的布尔返回值控制 window 续期，改动时勿恢复无界累积。exec 结果通过 `truncated` 标志标明任何输出缺失，`write_file(search)` 遇到截断快照必须拒绝覆盖，不能把保留头尾或截断提示写回原文件；替换内容通过回调字面返回，避免 `$&`/`$'` 等 JS 替换序列展开。守卫不只此一层：`docker_manage(logs)` 强制 `--tail 200` 且拒绝 `-f/--follow`；工具结果序列化进 LLM 前经 64K 字符中间截断；socket 写带 60s deadline（适配高延迟传输，超时关底层 socket 解挂）；独立于写路径的被动 idle 看门狗（60s 无入站数据即关闭）与终端输入队列 4MB 上限共同限制弱网积压，勿移除任一防线。**已连接终端输出**独立经 `TerminalOutputGuard` 统计当前 WebSocket 发出但未接收确认的 stdout+stderr 字节，总计不得超过 4MiB；超限或有积压且 60s 无有效 ACK 进展时关闭完整 SSH 会话（code 1000，`output_backlog_closed`，不自动重连），不再转发/续 SSH window。Workers WebSocket 无可用 `bufferedAmount`/drain 指标，因此使用随机代际 ID + 累计字节 `terminal_output_ack`；重复、旧代际、超前/非法 ACK 无效，ACK 不算用户活动。detach 取消该计时器，reattach 轮换代际并把 128KiB 回放计入新连接额度。该限制是传输积压上限，不是会话总输出上限，也不保证 xterm 渲染/文件落盘完成或限制畅通链路的持续输出成本；旧前端无 ACK 时也会触发闸门，升级后须刷新页面。
 
-31. **pi-lens 项目策略口径** - `.pi-lens.json` 仅供本机 pi-lens（AI 代码审查插件）读取，不参与构建、部署与 CI 门禁（同 #27 的 Biome 定位），`pi-lens-ignore` 行内注释仅为工具豁免、无运行时行为。其中 `rules.disable` 以风格类规则为主（`ignore` 仅豁免测试夹具/README/生成文件等路径），但不能据此推断所有安全规则均启用或所有禁用项均有逐处安全验证：**XSS 类规则（`no-inner-html`/`ts-xss-dom-sink`）刻意不做项目级禁用**——行内 `pi-lens-ignore` 只豁免逐处核实过的站点（agent-panel 的 Markdown 渲染经 DOMPurify 消毒，其余动态值均 escapeHtml 或来自可信 i18n 词条），未来新增的 innerHTML 站点仍会被规则捕获。Agent 流正文完成时，仅可复制 DOMPurify 渲染包装内的 HTML；缺少预期包装则使用 `textContent` 回退，不得把原文写入 `innerHTML`。新增 innerHTML 时请优先保证转义/消毒并核实后加行内豁免，切勿把这两条加入 `disable` 列表；**当前 `ast-grep:no-open-redirect` 实际已被项目级禁用**，工具不会报告该规则的新问题；这不是重定向安全的证明，修改重定向逻辑时必须单独核查目标来源与允许范围。扩大安全规则禁用清单前先确认告警为误报，优先修复或局部豁免。pi-lens 版本/规则集随设备升级可能产生新告警，处理标准以“是否真实影响运行与门禁”为准。
+31. **HTML 渲染与重定向安全** - 静态扫描结果不能代替数据流核查。动态值写入 `innerHTML` 前必须经 `escapeHtml` 转义、来自可信内置 i18n 词条或经 DOMPurify 消毒；纯文本优先使用 `textContent`。Agent 的 Markdown 渲染须保留 DOMPurify，流正文完成时仅可复制已消毒渲染包装内的 HTML；缺少预期包装则使用 `textContent` 回退，不得把原文写入 `innerHTML`。新增或修改 HTML 渲染站点时逐处核查输入来源与转义/消毒，不能因其他站点已验证就推定新站点安全。修改重定向逻辑时须单独核查目标来源与允许范围，不能把工具未报告问题当作重定向安全的证明。
 
 32. **SFTP 在线编辑** - 编辑器走独立 `sftp_edit_read` 消息（`SFTPHandler.editReadFile`）：仅限 ≤2MB 文本（`EDITOR_MAX_FILE_SIZE`，前后端常量须一致），worker 侧空字节嗅探（前 8KB，与 Git 一致）拒绝二进制后才发报文；前端 `editor-content.ts` 负责 UTF-8 严格解码（失败回退 GB18030 只读，浏览器无 GBK 编码器故不提供非 UTF-8 保存）、BOM 剥离/回写与 EOL 归一/还原；保存前以 mtime+size 快照比对做冲突检测（`statRemote`，stat 失败或基线 -1 必须弹确认，不得静默覆盖），保存复用 `enqueueUploadTask(overwriteFirst: true)` 上传覆盖通道（默认上传仍为非覆盖探测，`i18n.test.ts` 源码断言守护该语义）；协调器 `markSaved(content)` 与 CodeMirror 保存回调必须使用实际上传的文本快照更新基线，上传期间的新输入保持 dirty，不得按完成时的当前文本清除未保存状态；编辑读取/保存与普通传输共享单一上传状态机且在分享会话中随 `allowSftp` 门控并纳入 `edit` 审计操作。双击文件智能“打开”（`openEditorForFile` 的 `fallbackToDownload`）：可编辑尝试编辑器，worker 明确判定不可编辑（`sftp_error` 结构化 `code`：`binary`/`too_large`，消息边界白名单化后进入 `shouldFallbackToDownload`）或内容无法解码时自动转下载，且回退下载必须走既有串行下载队列（`queueDownloadFile`）而非裸 `downloadFile`（防并发二进制流串帧）；编辑读取同时只允许一次在途（`editReadActive` 互斥）；超时/权限等错误不触发回退。CodeMirror 6 为单 bundle 内联构建的既有依赖，语法高亮配色全部映射主题变量（`classHighlighter` + style.css），勿替换为 Monaco 或引入 CDN 版本。移动端：≤520px 窄屏近全屏+安全区+加大触摸目标（对齐 auth-challenge-dialog 先例）；触屏/窄屏下编辑器字号提升至 16px 以规避 iOS 对 contenteditable 聚焦时的强制页面缩放，勿回调字号。自动换行默认触屏/窄屏开启、桌面关闭（`pointer: coarse` 或 ≤520px，检测口径与字号规则一致），编辑器页脚开关状态持久化于 localStorage（`cloudssh_editor_wrap`），勿改动默认检测口径。
 
@@ -456,13 +478,21 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 
 44. **可选版本更新提示** - 运行版本从根 `package.json` 构建时导入（根/前端版本保持同步），与官方 `main/package.json` 的稳定 SemVer 数值比较，不按字符串或提交数比较，不依赖 GitHub Releases/Tags，也不提示降级或预发布版本。`GET /api/version` 只向固定官方 raw GitHub URL 请求公开版本元数据（不转发用户头部/凭据；必须使用 Workers 支持的 `redirect: 'manual'` 并拒绝 3xx，不得使用会在 Workers 中直接抛错的 `'error'` 模式），读取上限 16KiB、4s 超时，Worker isolate 去重/缓存并使用 Cloudflare fetch 缓存；成功缓存 6h、失败退避 15min，失败只返回 null。前端非阻塞同源读取，5s 超时，localStorage/内存缓存与跨标签页忽略同步；可见页面按缓存到期检查，隐藏/离线不检查，恢复可见/在线时重试。连接页在“连接参数”标题后展示紧凑版本徽标及可忽略的小提示，不再单独占用底部空间；标题区支持三语与窄屏自然换行，不能挤压语言切换或溢出卡片。用户空间/桌面终端仍使用页脚，移动终端放进“更多”菜单，分享认领页不检查；忽略仅针对该新版，下一个新版可再次提示。不弹窗、不自动更新/刷新/跳转、不影响 SSH/SFTP/Agent；更新日志链接为固定官方地址，三语文案随语言切换。
 
-45. **Cloudflare Zero Trust Access 认证模式** - 可通过 Worker Access 面板或 hostname-based Self-hosted 应用配置，须确保实际生效策略保护本站页面、API 和 WebSocket，并保护/关闭其他公开入口。面板入口不能等同于实际策略类型；官方 Worker-level WebSocket 限制与域名/路径优先级须结合具体部署核查，不得断言所有面板配置均不可用，也不要求迁移已验证可用的实例。Worker 入口通过 `ctx.access.getIdentity()` 读取运行时已验证身份（4s 有界等待），以 Request 弱映射传递给认证逻辑，不信任原始邮箱/JWT 头；Access 上下文无邮箱或查询失败仍维持 Access 模式并拒绝登录，不降级 GitHub。`CF_ACCESS=true` 只是强制模式门，不能代替边缘策略。路由键保持 `cf-` 加邮箱 SHA-256 前 128 位（35 字符），`github_id=-2` 仅为库内哨兵；不同邮箱不能改写同一库身份。模式优先级：密码 > Access > GitHub/匿名。GitHub OAuth 在 Access/密码模式均禁用；一次性令牌须符合当前模式，并在消费前核对登录者的完整路由键。分享配置从库内所有者邮箱推导路由，无需接收者提供。前端显示邮箱及首字母头像，退出转 `/cdn-cgi/access/logout`。Worker/UserDB 意外异常仅返回通用 JSON 500，不回显或记录异常原文。
+45. **Cloudflare Zero Trust Access 认证模式** - 可通过 Worker Access 面板或 hostname-based Self-hosted 应用配置，须确保实际生效策略保护本站页面、API 和 WebSocket，并保护/关闭其他公开入口。面板入口不能等同于实际策略类型；官方 Worker-level WebSocket 限制与域名/路径优先级须结合具体部署核查，不得断言所有面板配置均不可用，也不要求迁移已验证可用的实例。Worker 入口将原生 Access 准入与浏览器邮箱身份分离：仅当前调用的可信 `ctx.access` 及非空有界 `aud` 可标记准入；`CF_ACCESS` 或任何请求头都不能生成该标记。浏览器路径通过 `ctx.access.getIdentity()` 读取邮箱（4s 有界等待），以 Request 弱映射传递给认证逻辑，不信任原始邮箱/JWT 头；Access 上下文无邮箱或查询失败仍维持 Access 模式并拒绝网页登录，不降级 GitHub。仅精确 `/mcp` 跳过用户资料查询，机器调用仍必须同时满足原生 Access 准入与个人 MCP Token 数据库校验，不能因 Service Token 不提供用户资料而拒绝，也不能把机器准入用于网页登录/管理接口/CA 签发。`CF_ACCESS=true` 只是强制模式门，不能代替边缘策略。路由键保持 `cf-` 加邮箱 SHA-256 前 128 位（35 字符），`github_id=-2` 仅为库内哨兵；不同邮箱不能改写同一库身份。模式优先级：密码 > Access > GitHub/匿名。GitHub OAuth 在 Access/密码模式均禁用；一次性令牌须符合当前模式，并在消费前核对登录者的完整路由键。分享配置从库内所有者邮箱推导路由，无需接收者提供。前端显示邮箱及首字母头像，退出转 `/cdn-cgi/access/logout`。Worker/UserDB 意外异常仅返回通用 JSON 500，不回显或记录异常原文。
 
 46. **OpenSSH 用户证书认证与 Cloudflare 原生 SSH CA** - 支持出示 `*-cert-v01@openssh.com` OpenSSH 用户证书（Ed25519、ECDSA P-256/384/521 与 RSA-SHA2-256/512）完成 SSH 用户认证（RFC 4252 §7 与 PROTOCOL.certkeys）。证书必须为用户类型（`type = 1`），在有效时间范围内，且公钥必须与提供的私钥严格匹配。提供两级体验：① 协议层兼容：在私钥框中可同时附带用户证书（单行文本），或在 API 中分别传递，支持外部已签发证书（如 step-ca、Vault 或手动 CA）；② Cloudflare 原生 SSH CA 自动化：前端本地使用 WebCrypto 瞬时生成 ECDSA P-256 临时公私钥，经同源代理 `/api/cf-ssh-ca/sign` 调用 Cloudflare 官方 `/cdn-cgi/access/cert_sign` 获取短期证书（在 `cf_access` 模式下自动携带已认证的 Access JWT；公网受信任 HTTPS 证书，无私有自签 Root CA 拦截风险），私钥用完即在浏览器内存销毁、不落盘、不持久化；已保存服务器配置支持设置 `cf_ssh_ca_team`，发起连接时自动签发并通过 `ephemeralCredential` 传递，实现零静态密钥维护的 Zero Trust 单点登录。客户端不因登录名不在证书 principals 中而提前拒绝：空 principals 表示任意用户，非空时 sshd 仍可用 AuthorizedPrincipalsFile/Command 映射到不同 Unix 用户（Cloudflare 简单配置的 principal 通常是邮箱前缀）。配置了 `cf_ssh_ca_team` 的服务器不能出现在跳板链的任一跳，也不能在仍被其他服务器引用为跳板时改成该模式；此类服务器同样不能创建一次性分享。连接表单与服务器编辑里的 Cloudflare CA 入口仅在 `authMode === 'cf_access'` 时显示；GitHub、密码和匿名模式默认隐藏。入口隐藏时，编辑已有 CA 服务器且未改认证方式，不得把已存 `cf_ssh_ca_team` 清空。签发代理在后端也要求 Access 模式和已验证邮箱，不能只依赖前端隐藏；连接表单在签发期间禁止重复提交，并在模式代际、主机、端口、用户名或团队变化后丢弃迟到证书。
 
 47. **服务器弹窗响应式布局** - 新增/编辑/克隆共用 `#server-modal`：≥900px 使用最高 64rem 的双栏（名称/标签并排、连接与认证分栏），窄屏单列。只有 `.server-modal-fields` 滚动，标题和保存操作保持可达；每次打开清零字段滚动位置，短窗口与放大字号不能通过裁掉内容来伪造无滚动。主站连接表单与弹窗共用 `.ssh-endpoint-fields`，≥480px 为端口预留 9rem，保留原生数字控件和 1–65535 校验；隧道模式通过 `.ssh-host-field-wide` 让域名占满整行，并继续隐藏端口、移除 required。触屏/≤520px 的弹窗输入字号不低于 16px。布局规则不覆盖主题材质/颜色；可折叠 Service Token 字段的 grid 必须保留 `:not(.hidden)` 门控，不能把隐藏凭据区域意外展开。`server-modal-layout.spec.ts` 覆盖四主题、三语言、桌面/短窗口/窄屏、认证/隧道、五位端口与自定义大字号回退。
 
 48. **首屏初始化与强制登录防闪烁（#192）** - 初始 HTML 使用 `#app[hidden][inert][aria-hidden]` 隔离未决页面，独立 `#app-loading` 展示主题自适应、三语和减少动态友好的加载状态；不能先展示匿名连接表单再替换为登录面板。`app-bootstrap.ts` 同时读取 `/api/config` 与 `/api/auth/me`（同源、no-store），共享 10s deadline 覆盖响应正文，任一失败取消另一请求；仅身份接口 401 表示未登录，网络/HTTP/JSON/必要字段异常均停留错误页并允许手动单次重试，不降级匿名、不缓存认证策略。`ConnectionForm` 直接接收已确认配置，只渲染最终模式，强制登录/坏哈希面板不创建 SSH 凭据输入或读取本地连接历史。分享认领和独立终端路由仍绕过这两次读取并显式解除加载态；`#password-setup` 不受配置失败阻断。`app-bootstrap.test.ts` 与 Chromium/WebKit 的 `e2e/app-bootstrap.spec.ts` 覆盖脚本加载前、慢响应/刷新、已登录、失败/超时/迟到响应、重试、三语和动态偏好。
+
+49. **账户唯一 MCP 配置（#194）** - 每登录账户只生成一次长期令牌，无名称/天数/多Token/撤销/轮换入口。`mcp_configs.user_id` 主键确保唯一，并发生成幂等；旧摘要令牌无法恢复，新验证器不接受，首次生成提示更新客户端并清理账户旧记录。个人令牌与 Access Service Token 沿用账户 AES-GCM 加密回读，根密钥仍在同一 DB（不是独立 KMS）；用户已同意保存完整配置，不再沿用早期“Access不上传/只存摘要”语义。GET `/api/mcp/config` 只返回元数据、不改变绑定；POST首次生成、PUT逐服务器grants，POST `/api/mcp/config/credentials` 仅已登录所有者明确复制/查看时解密，旧多Token和DELETE接口移除。不写浏览器存储/日志；关闭/换号/模式变化清理明文及迟到响应。仅cf_access展示精简的Service Token/Service Auth引导，已保存时折叠；确认勾选不是边缘验证，不能用Bypass，本站与SSH隧道凭据有别。MCP 验证可信原生 Access 准入，不依赖 getIdentity 返回用户资料，仍校验个人令牌/模式/账户与逐服务器权限；无原生上下文或非法 aud 必须拒绝。DEBUG_MODE=true 时仅记录 mcp.auth.denied 的固定原因码（上下文缺失/令牌格式/模式/凭据拒绝/后端查询失败），每 isolate 每60秒最多20条，不包含请求头、令牌、身份、异常正文；对外仍返回统一401，不用诊断放宽认证。read/write/exec/context逐服务器校验，工具列表并集不是全局权限；权限更新后尽力关闭旧执行池，握手后/派发前再检查，旧清理不得删除替代的新连接。令牌在授权修改/凭据变更后保持不变，认证模式/完整路由/allowlist仍校验；密码换代先拒绝旧绑定，所有者显式POST复制/保存可恢复同一令牌，GET不得恢复。每配置120请求/分钟、最多100服务器，两条短连接、每服务器一次操作、60s空闲、命令≤60s/整次≤90s。保留严格TOFU、SSRF、16KiB隧道载体分帧、非PTYexec/独立SFTP与所有输出预算；交互认证/浏览器CA不可无人值守，未知结果不重放，取消不保证回滚或杀尽子进程。SFTP文本≤64KiB、目录≤200条/约64KiB/32批；临时文件必须在OPEN时原子指定0600，不能靠后续chmod关闭初始暴露窗口，保留EXCL与已有普通文件权限恢复；INIT写入与版本等待须同时接住失败，清理不得产生未处理Promise拒绝。覆盖哈希+原子rename，非事务锁，不保证inode元数据。终端上下文仅显式共享且逐服务器授权，30min/断线失效，不输入、不刷新空闲。设置名为「外部AI助手MCP设置」，上下文区为「共享当前终端上下文」，活动区为「MCP操作日志」，三语同步。Agent/MCP 实际共用 assistant-ui.css 的表面、48px标题栏、标题/图标、输入、主色操作和页脚，不能只调主题色。通用图标按钮固定尺寸必须排除带文字的Agent返回按钮，移动端操作组不收缩、标题可截断；≤380px仅隐藏返回文字，保留箭头和完整aria-label，不缩小触摸目标或改动关闭语义。服务器权限首次配置展开、已配置默认折叠；仅展开时挂载桌面权限表或移动逐行披露。搜索/筛选、折叠和断点切换仅影响展示，筛选基于已保存权限（编辑中不移走当前行），提交完整草稿而非可见行，不提供批量授权。已有配置无修改时保存禁用，按服务器/权限集合语义判断并显示变更台数，恢复原值/保存成功重建基线；复制/失败/忙碌状态不能误启用，Access仅填入替换凭据才构成改动，首次生成仍可用。窗口使用主题变量和统一液态材质，近期操作整体默认折叠，展开后是最多100条小字号等宽单行日志（时间范围/服务器/状态/工具），无逐条折叠，列表可滚动，仅展开且可见时刷新；活动≤100条/约24h，Alarm与记忆共用最早唤醒，不存命令/输出，不作永久审计。固定SVG图标保留三语无障碍及思考状态恢复。详见 `docs/mcp.md`；设置表幂等创建，沿用v3 DO绑定，不新增migration、不删除已有Worker。
+
+    **删除保存服务器**：必须先核对归属、跳板引用与未结束分享，同一 SQLite 事务删除服务器、记忆/待提炼任务、MCP grants 与近期活动。保留账户长期令牌、Access 凭据、其他服务器、主机指纹和已结束分享审计。旧库冷启动清理悬空授权/活动；迟到的操作记录不能重新插入，连接配置异步解密后须复核链上归属。仅作废相关一次性连接票据、尽力关对应 MCP 执行连接，不打断其他服务器或承诺回滚远程操作。前端只按明确成功确认通知同账户设置窗口，删除不影响其他草稿勾选，迟到列表/保存响应不得复活已删除行。
+
+50. **移动端精细操作（#195）** - 选择模式由明确「选择」入口开启，以 xterm 公开选区/缓冲 API 为权威，44px 端点命中区须保留抓取偏移、短选区重叠时按可见端点距离判定；宽字符按 cell width 对齐，不按 JS 字符串长度推算列数。边缘滚动仅普通缓冲区本地历史、最多约18行/秒，松手/取消/resize/关闭/连接切换停止，不发送远端滚轮或方向键，不复制第二份历史。仅选择模式捕获原生菜单，普通状态与手动粘贴保留系统菜单；操作栏复制失败保留选区，AI 附加仍受原权限与显式发送约束。字号为本机 `cloudssh_terminal_font_size`（12–18px或自动12/13/14px），不混入主题或账户配置；字号/列重排清除选区并提示，高度变化只在原行仍匹配时恢复选区。手动粘贴单次≤65,536字符，明确拒绝超限、不静默截断，Enter只换行；文本不持久化，绑定发起WebSocket，切标签/离开终端/断线/重连/销毁均销毁，迟到读取不得发送到新会话，成功仍经 xterm/trzsz/Shell-ready 管线。SFTP 多选复用原选择模型、通用打开复用 `openEntry`（含软链接与串行下载），不在多选中双击打开。「打开／多选」须与右侧独立横向滚动区并排隔离，不能以 sticky 叠放遮盖滚动文字；保留工具按钮不压缩/单行与44px触摸目标。用户主动中断传输经 `runAfterTransferConfirmation`，在批准后复核队列代际与标签/身份；`hide`/`dispose`仍同步强制清理，不能把确认塞入断线与账号切换路径。移动标签菜单复用原操作与独立连接令牌；新spec及既有移动终端/用户空间/剪贴板纳入WebKit，但自动化不替代真机原生菜单/IME/触感验收。详见 `docs/mobile-ux.md`。
+
+    **移动阅读空间与材质**：沿用≤767px或粗指针且≤1180px断点，隐藏Agent四个`data-prompt-key`普通建议及空容器占位，但保留`agent-resume-task-chip`恢复入口，桌面不隐藏。终端更多菜单MCP入口紧邻Agent之后，所有直接子项禁止flex压缩，由整菜单纵向滚动，不能让主题选择或字号行溢出重叠；原匿名/分享权限不变。内置`data-theme="liquid-glass"`只在该移动断点通过body继承覆盖阅读表面变量，并对共用弹窗、菜单和抽屉使用实底；保留页背景、圆角、边缘和阴影，不改根内联调色板、桌面或自定义主题。`mobile-glass.spec.ts`核查15类表面、主题/断点切换、真实场景截图与菜单正文不透出终端文字，不能只靠加大模糊掩盖叠字。
 
 ## SSH 兼容增强边界
 
@@ -480,7 +510,7 @@ release: 发布 vX.Y.Z <主题>版本（如 `release: 发布 v1.10.2 工作流�
 | Production | `cloudssh` | `main` | `<name>.workers.dev` + 自定义域名 |
 | Test | `cloudssh-test` | `test` | `<name>-test.workers.dev` + 自定义域名 |
 
-两个环境的 Durable Objects（SSHSessionDO、UserDBDO、SSHShareDO）数据完全隔离。
+两个环境的 Durable Objects（SSHSessionDO、UserDBDO、SSHShareDO、MCPExecutionDO）数据完全隔离。
 
 ### 部署方式
 
@@ -504,12 +534,14 @@ pnpm run deploy:test     # 部署 test 环境
 
 官方 CI（`deploy.yml` / `github-pages.yml` / `ssh-interop.yml`）所有 job 均在分配 runner / 展开 matrix 前通过 `github.repository_owner == 'newbietan'` 限定维护者仓库，勿改为 `github.actor` 判断：外部贡献者向官方仓库提交 PR 时仍需正常检查。其他所有者的 Fork 不运行部署、Pages 或互操作 CI；GitHub 可能保留 Skipped 记录，但不执行 runner 任务。Cloudflare 面板 / Git 集成部署独立于这些工作流，无需启用 Actions 或配置 CI 的 Cloudflare Secrets。`tests/workflow-policy.test.ts` 逐个检查非同步工作流的 job 级 owner 限制，新增工作流须沿用该策略。
 
+- 指向维护者仓库 `test` / `main` 的 PR，以及手动执行 → 完整验证但绝不部署；Fork PR 代码仅在无 Secrets 的步骤中运行，禁止改成 `pull_request_target` 执行未信任代码
+- Worker CI 并发按事件与 PR/分支分组，仅取消过期 PR 验证；push 部署不在途取消，30 分钟 job 上限。互操作无 Secrets/部署，可取消旧运行；Pages 同一目标串行发布、10 分钟 job 上限
 - 维护者仓库 `test` 分支 push → 自动部署到 `cloudssh-test`
 - 维护者仓库 `main` 分支 push → 自动部署到 `cloudssh`
-- 维护者仓库 `docs/**` 变更 → 发布 GitHub Pages 主题编辑器（`github-pages.yml`）
+- 维护者仓库 `docs/**` 变更 → 发布 GitHub Pages 主题编辑器（`github-pages.yml`）。上传与部署必须共用含 `github.run_attempt` 的产物名：Pages 按整个 run 查找产物，重跑 job 时上次尝试的同名归档仍可能存在。仅修改 Pages 工作流可在目标分支手动触发验证；重跑旧 run 不会载入新工作流。
 - Fork 仅按需运行上游 `main` 同步（`sync-upstream.yml`）：手动执行无需变量；定时同步默认关闭，仅 `AUTO_SYNC_UPSTREAM=true` 开启，删除或设为 `false` 即关闭
 
-> 部署门禁（`deploy.yml`）依次执行：冻结锁文件安装 → Playwright 浏览器安装 → `typecheck` → `test` → `build:frontend` → `test:e2e` → 上传浏览器报告 → 按分支部署；任一环节失败即阻断部署。E2E 失败仍尝试上传报告，不放行部署。CI 部署步骤直接执行 `pnpm exec wrangler deploy [--env test]`，复用已通过测试的前端内联产物，不在注入部署 Secrets 后重复构建；本地 `deploy`/`deploy:test` 脚本仍保留一键构建部署。
+> 部署门禁（`deploy.yml`）依次执行：冻结锁文件安装 → `typecheck` → `test` → `build:frontend` → Playwright 浏览器安装 → `test:e2e` → 上传浏览器报告 → 按分支部署；任一环节失败即阻断部署。E2E 失败仍尝试上传报告，不放行部署。CI 部署步骤直接执行 `pnpm exec wrangler deploy [--env test]`，复用已通过测试的前端内联产物，不在注入部署 Secrets 后重复构建；本地 `deploy`/`deploy:test` 脚本仍保留一键构建部署。
 
 ### 自定义域名
 

@@ -30,6 +30,9 @@ import { customThemeModal, customThemeStore } from './custom-theme-manager';
 import { requestCloudflareSshCertificate } from './cf-ssh-ca';
 import { notify } from './ui-feedback';
 import { initVersionNotice } from './version-notice';
+import { McpManager } from './mcp-manager';
+import { serverOwnerKey } from './server-removal';
+import { mountAssistantIcons } from './assistant-icons';
 
 // ==================== 全局状态 ====================
 
@@ -49,6 +52,13 @@ const snippetManager = new SnippetManager({
   getTerminal: () => tabManager?.getActiveTab()?.terminal ?? null,
   isAuthenticated: () => isLoggedIn && !sharedSessionMode,
   onStateChange: () => syncDrawerSegmentedControl(),
+});
+
+const mcpManager = new McpManager(() => {
+  if (!isLoggedIn || sharedSessionMode) return null;
+  const tab = tabManager?.getActiveTab();
+  const session = tab?.terminal.getMcpSession();
+  return tab && session ? { ...session, label: tab.label } : null;
 });
 
 function setUserSpaceMenuOpen(open: boolean): void {
@@ -114,10 +124,14 @@ function getTabManager(): TabManager {
       }
       try {
         const ws = await requestSavedServerWebSocket(serverId, tab.hostInfo?.cfSshCaTeam);
-        const { terminal } = showTerminalWithNewTab(tab.label, tab.hostInfo);
-        terminal.mount();
-        const reconnectFactory = () => requestSavedServerWebSocket(serverId, tab.hostInfo?.cfSshCaTeam);
-        terminal.connectWithWebSocket(ws, tab.hostInfo, { reconnectFactory });
+        // A new transfer or account/tab teardown may have happened during token acquisition.
+        if (!tab.containerEl.isConnected) { ws.close(1000); return; }
+        getTabManager().runAfterTransferConfirmation(() => {
+          const { terminal } = showTerminalWithNewTab(tab.label, tab.hostInfo);
+          terminal.mount();
+          const reconnectFactory = () => requestSavedServerWebSocket(serverId, tab.hostInfo?.cfSshCaTeam);
+          terminal.connectWithWebSocket(ws, tab.hostInfo, { reconnectFactory });
+        }, undefined, () => ws.close(1000));
       } catch (e) {
         notify(e instanceof Error ? e.message : String(e), { variant: 'danger' });
       }
@@ -254,6 +268,7 @@ function initTerminalTab(): void {
 // ==================== 页面切换 ====================
 
 function deactivateTerminalView(): void {
+  tabManager?.getActiveTab()?.terminal.cancelPendingPaste();
   closeAllDrawers();
   mobileTerminalController.leaveTerminal();
   document.getElementById('terminal-section')!.classList.add('hidden');
@@ -262,6 +277,7 @@ function deactivateTerminalView(): void {
 }
 
 function showAuthSection(): void {
+  mcpManager.setIdentity(null);
   if (!appConfig) return;
   deactivateTerminalView();
   document.getElementById('auth-section')!.classList.remove('hidden');
@@ -287,6 +303,7 @@ function showAuthSection(): void {
 
 function showUserSpace(user: InitialUser, config: AppConfig): void {
   deactivateTerminalView();
+  mcpManager.setIdentity(serverOwnerKey(user), config.authMode);
   const previousGithubId = currentGithubId;
   isLoggedIn = true;
   currentGithubId = user.github_id;
@@ -332,6 +349,11 @@ function showUserSpace(user: InitialUser, config: AppConfig): void {
 
 /** 显示连接页面（匿名 → auth-form，登录 → 服务器列表） */
 function showConnectionPage(): void {
+  if (tabManager) tabManager.runAfterTransferConfirmation(showConnectionPageConfirmed);
+  else showConnectionPageConfirmed();
+}
+
+function showConnectionPageConfirmed(): void {
   closeAllDrawers();
 
   // 如果还有活跃标签，不需要隐藏终端区域；只需要覆盖显示连接页面
@@ -487,9 +509,11 @@ document.getElementById('disconnect-btn')?.addEventListener('click', () => {
   const tab = tm.getActiveTab();
   if (!tab) return;
 
-  tab.sftpPanel?.hide();
-  tab.terminal.disconnect();
-  tm.closeActiveTab();
+  tm.runAfterTransferConfirmation(() => {
+    tab.sftpPanel?.hide();
+    tab.terminal.disconnect();
+    tm.closeActiveTab();
+  }, [tab]);
 });
 
 // ==================== 抽屉分段控制条与互斥联动 ====================
@@ -554,15 +578,24 @@ function applyDrawerToggle(drawer: 'sftp' | 'snippet' | 'agent', open: boolean):
   return true;
 }
 
+function requestDrawerToggle(drawer: 'sftp' | 'snippet' | 'agent', open: boolean): void {
+  const apply = () => {
+    applyDrawerToggle(drawer, open);
+    syncDrawerSegmentedControl();
+  };
+  const closesSftp = drawer === 'sftp' ? !open : open;
+  if (closesSftp && tabManager) tabManager.runAfterTransferConfirmation(apply);
+  else apply();
+  // While a confirmation is open (or after cancellation), keep the slider on the actual panel.
+  syncDrawerSegmentedControl();
+}
+
 function initTerminalDrawerControl(): void {
   const drawerBar = document.getElementById('terminal-drawer-segmented-bar');
   if (!drawerBar) return;
 
   terminalDrawerControl = new LiquidSegmentedDrawerControl(drawerBar, (drawer, open) => {
-    if (!applyDrawerToggle(drawer as 'sftp' | 'snippet' | 'agent', open)) {
-      // 抽屉不可用：回退透镜的激活态
-      terminalDrawerControl?.setActive(null);
-    }
+    requestDrawerToggle(drawer as 'sftp' | 'snippet' | 'agent', open);
   });
 }
 
@@ -573,29 +606,28 @@ function initTerminalDrawerControl(): void {
  */
 function initMobileDrawerButtons(): void {
   const closeMenu = () => mobileTerminalController.hideMoreMenu();
+  document.getElementById('mobile-tab-actions-btn')?.addEventListener('click', () => {
+    closeMenu();
+    const anchor = document.getElementById('mobile-more-btn');
+    if (anchor) tabManager?.showActiveTabMenu(anchor);
+  });
 
   document.getElementById('mobile-sftp-btn')?.addEventListener('click', () => {
     const tab = tabManager?.getActiveTab();
-    applyDrawerToggle('sftp', !(tab?.sftpPanel?.isVisible() ?? false));
+    requestDrawerToggle('sftp', !(tab?.sftpPanel?.isVisible() ?? false));
     closeMenu();
   });
 
   document.getElementById('mobile-agent-btn')?.addEventListener('click', () => {
     const tab = tabManager?.getActiveTab();
-    applyDrawerToggle('agent', !(tab?.agentPanel?.isOpen ?? false));
+    requestDrawerToggle('agent', !(tab?.agentPanel?.isOpen ?? false));
     closeMenu();
   });
 }
 
 // 移动端命令片段按钮
 function toggleSnippetManager(): void {
-  const tab = tabManager?.getActiveTab();
-  if (!snippetManager.isOpen()) {
-    tab?.sftpPanel?.hide();
-    tab?.agentPanel?.hide();
-  }
-  snippetManager.toggle();
-  syncDrawerSegmentedControl();
+  requestDrawerToggle('snippet', !snippetManager.isOpen());
 }
 
 document.getElementById('mobile-snippets-btn')?.addEventListener('click', toggleSnippetManager);
@@ -618,6 +650,9 @@ askAISelectionButton?.addEventListener('pointerdown', (event) => {
   event.stopPropagation();
 });
 askAISelectionButton?.addEventListener('click', () => {
+  tabManager?.askAIAboutActiveSelection();
+});
+document.getElementById('mobile-selection-ai-btn')?.addEventListener('click', () => {
   tabManager?.askAIAboutActiveSelection();
 });
 
@@ -986,6 +1021,7 @@ function finishAppLoading(): void {
 }
 
 async function init(): Promise<void> {
+  mountAssistantIcons();
   clearLegacyAgentSessionDrafts();
   initI18n();
   initUserSpaceMobileMenu();
@@ -1024,6 +1060,7 @@ async function init(): Promise<void> {
   const drawerBar = document.getElementById('terminal-drawer-segmented-bar');
   if (drawerBar) {
     initTerminalDrawerControl();
+  mcpManager.init();
   }
   initMobileDrawerButtons();
 

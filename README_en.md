@@ -18,6 +18,7 @@
     <a href="CHANGELOG.md">Changelog</a> ·
     <a href="#contributors">Contributors</a> ·
     <a href="#sponsor">Sponsor</a> ·
+    <a href="#special-thanks">Special Thanks</a> ·
     <a href="#license">License</a>
   </p>
   <p>
@@ -62,6 +63,7 @@
   - [Local Development](#local-development)
 - [Contributors](#contributors)
 - [Sponsor](#sponsor)
+- [Special Thanks](#special-thanks)
 - [License](#license)
 
 </details>
@@ -106,7 +108,8 @@
 - **One-Time SSH Access Sharing**: Optionally lets signed-in users share saved servers. The link contains only a 256-bit random capability, never the host, username, password, private key, or jump route. Only its hash is stored; it can be claimed once and has separate claim and session lifetimes. Shared sessions allow the terminal and SFTP while the backend disables AI Agent, OS detection, host-key mutation, and reconnect. Owners can revoke live access and review share-only lifecycle, SFTP, and terminal-output records.
 - **MitM Protection (TOFU)**: Automatically extracts and prints the server's Host Key (SHA-256 fingerprint) on the first connection, supporting Ed25519/ECDSA/RSA signature verification, and caches known host keys locally and via API to prevent MitM on future connections.
 - **Geek Terminal Experience**: Powered by `@xterm/xterm` and the `@xterm/addon-webgl` hardware acceleration rendering engine, ensuring silky smooth scrolling even with massive log outputs.
-- **Reliable Terminal Clipboard Interaction**: Completing a terminal selection with a mouse automatically copies it, and right-click pastes directly. On touch devices, tapping Copy in the shortcut bar enters selection mode; drag across terminal text and tap Copy again to finish, avoiding unreliable long-press selection, while Paste remains a separate action. Paste data follows xterm.js's native input pipeline, emits bracketed-paste control sequences only when the remote application enables that mode, and normalizes line endings for compatibility with Vim and regular shells.
+- **Reliable Terminal Clipboard Interaction**: Completing a terminal selection with a mouse automatically copies it, and right-click pastes directly. On touch devices, Select enters a dedicated mode with adjustable endpoint handles, edge scrolling through history, and explicit Copy/Cancel actions; native long-press menus are suppressed only in selection mode. Paste remains separate and offers an ephemeral, session-bound manual dialog when clipboard reads fail (up to 65,536 characters; multiline text may execute commands). Paste data follows xterm.js's native input pipeline, emits bracketed-paste control sequences only when the remote application enables that mode, and normalizes line endings for compatibility with Vim and regular shells.
+- **Precise Touch Controls**: More offers 12–18px terminal font sizing/Auto (remembered on this device) and current-tab actions. SFTP adds explicit Open, checkbox multi-select, Select all and Clear selection while retaining existing editing, sequential downloads and batch deletion. Leaving an active transfer by closing a drawer, switching tabs/drawers or returning to the connection page asks before interrupting it; disconnection and teardown still clean up immediately, without background transfers. See [mobile interaction notes](docs/mobile-ux.md) for behavior and device-testing limitations.
 - **Mobile Terminal Support**: Phones and tablets get dynamic visual-viewport sizing, soft-keyboard and dynamic safe-area calculations (`env(safe-area-inset-*)` for notches and Dynamic Island), iOS Chinese IME compatibility, a compact action bar, one-shot Ctrl/Alt, Esc/Tab/arrows/Home/End/PgUp/PgDn shortcuts, and full-screen Agent/SFTP panels. All three side drawers (SFTP, Agent, snippets) support touch right-swipe to close via their headers, avoiding collisions with iOS system edge gestures and vertical scroll contention; touch interactions feature active press-scale feedback without native tap-highlight flash, touch targets expand to ~36px under coarse pointers, and scrollable drawer containers prevent overscroll rubber-banding (`overscroll-behavior-y: contain`). On narrow screens, the AI Agent header and quick prompt chips dynamically wrap and fold to prevent clipping. After a page returns from the background, CloudSSH actively validates the WebSocket and replaces connections that only appear open. Anonymous sessions rebuild SSH from the current in-memory credentials, while signed-in saved servers request a fresh one-time connection token; the UI and terminal input return to the connected state only after `shell_ready`. Users may explicitly request fullscreen landscape; unsupported orientation locks fall back to a manual rotation hint without changing desktop layouts. If the mobile OS completely discards the page, the current shell cannot be resumed seamlessly.
 - **Customizable UI & Liquid Segmented Controls**: Theme V4 offers built-in Standard Dark, Standard Light, Cyberpunk, and macOS 26-inspired Liquid Glass themes. The user space header and terminal action bar feature floating glass dynamic islands and liquid segmented controls, integrating SFTP, custom commands, and AI Agent drawers into a unified pill capsule driven by a shared 1D physics spring engine (`spring.ts`, using Euler numerical integration) with a smooth 3D liquid lens slider for seamless mutually exclusive drawer toggling. Pointer specular spotlights are generalized across all themes (rAF-throttled CSS variable transmission, automatically bypassed on touch devices for power savings), accompanied by staggered card and row entrance animations, cold-loading skeleton screens (with complete ARIA accessibility attributes), global unified `:focus-visible` theme rings, and W3C multi-layer box-shadow syntax compatibility fixes. V4 adds gradient/mesh background layers (with a readability scrim and a slow drift animation), a scanline/flicker/glow/noise effect registry, an independent surface-blur and saturation tier (`saturate(180%)` + specular inner highlights), and typography scaling, with full support for `prefers-reduced-motion` and `data-ui-motion` tiers. Background drift uses an independent clipped layer and prepainted textures animated with `transform`, reducing main-thread paint without reducing glass materials, blur, or glow. The companion [GitHub Pages theme editor](https://newbietan.github.io/CloudSSH/theme-editor/) provides live controls for colors, shape, density, font, shadows, motion, background layers, effects, and button/input/card/tab styles, with previews for login, server list, terminal + SFTP, and the AI Agent panel. The theme segmented bar persistently displays 5 options (4 built-in + 1 Custom), with the standalone upload button removed. Clicking Custom when no theme has been uploaded opens a management modal prompting upload; clicking Custom while already active opens the modal to manage multiple themes (color swatches preview, instant switching, deletion confirmation, up to 20 custom themes). Signed-in users sync their theme library to the cloud for cross-browser restoration, while anonymous users keep them in the current browser only.
 - **Local Fonts and Icons**: Material Symbols Outlined and JetBrains Mono ship with the project. Fonts are inlined into the main app's single HTML and served from the same origin by the theme editor, removing the Google Fonts dependency; normal builds do not download fonts. This is not a fully offline app: authentication, SSH, and other network features remain unchanged. See the [font sources, licenses, and maintenance guide](docs/local-fonts.md).
@@ -129,7 +132,13 @@
   - **Readable Work Logs & Simple Background Retries**: The LLM summarizes normal conversation into readable work history and reusable knowledge; related work can merge within 30 minutes. Conversation is persisted in SQLite and processed by UserDBDO Alarms, including after disconnection or instance restart. Failed extraction receives up to three additional retries, then the task is removed on success or exhaustion. No separate evidence package, execution ledger, dual queue, receipt framework, or notification polling. See [context and memory](docs/agent-context-memory.md).
   - **Long-Task Context Summaries**: Older conversation is summarized through standard `/responses` calls while recent complete tool exchanges are retained. No `/responses/compact` dependency. Context/output budgets default to 64,000/8,192 tokens and are configurable; start a new Agent chat after changes.
   - **Compatibility & Diagnostics**: Model capabilities vary; bounded compatibility changes apply only to explicitly unsupported optional parameters, and incomplete tool calls are not executed. Errors stay concise; detailed diagnostics appear in the web terminal only with `DEBUG_MODE=true`. Model configuration retains its custom dropdown, same-address discovery using saved credentials, and Base URL binding. Requests use `store:false`; verify the provider's actual retention policy.
-- **Quality Gates**: Before deploying either `test` or `main`, GitHub Actions performs frozen-lockfile installation, Worker/frontend type checking, unit and integration tests, reproducible frontend builds, Playwright browser E2E, and axe accessibility regression. Any failure blocks deployment.
+- **Quality Gates**: Before deploying either `test` or `main`, GitHub Actions performs frozen-lockfile installation, Worker/frontend type checking, unit and integration tests, reproducible frontend builds, Playwright browser E2E, and axe accessibility regression. Any failure blocks deployment. Pull requests targeting `test`/`main` and manual runs execute the same checks without deployment credentials or deployment; only branch pushes deploy to the corresponding test/production environment.
+
+### External AI assistants (MCP)
+
+After signing in, open the connection-node **External AI assistant MCP settings** icon to generate one permanent account configuration with independently editable permissions per server, repeatable copying and no revocation control. Compatible clients such as Claude Code and Cursor can use `https://your-instance/mcp` for independent commands and bounded SFTP text operations. Explicitly share recent output from a terminal tab and expand recent operation records in the panel; idle connections are released automatically.
+
+Exec is advance authorization, not a read-only sandbox or per-command browser approval. The endpoint neither takes over your interactive terminal nor exports stored SSH credentials. Verify every hop's host key first; interactive authentication and browser-issued CA credentials are unsupported. Cloudflare Access sign-in shows a dedicated Service Token / Service Auth guide; the entered credentials are included alongside the personal token in the client configuration, stored with the personal token using recoverable account encryption. The key remains in the same database, not an independent KMS. Legacy digest-only tokens require one new configuration. Other sign-in modes do not show this setup. See [MCP setup, limits and DO migration](docs/mcp.md).
 
 </details>
 
@@ -200,6 +209,8 @@ flowchart TB
 3. **Build Command**: During deployment settings, enter `pnpm run build:frontend` as the Build command, then save and deploy.
 4. **Access the App**: After successful deployment, access via the default domain `https://cloudssh.<your-subdomain>.workers.dev`.
 5. **Bind Custom Domain** (Optional): Go to Worker Settings → Domains & Routes → Add, enter your domain and confirm.
+
+To skip automatic Cloudflare Git builds based on changed file paths, configure include/exclude rules under the Worker’s **Settings → Build → Build watch paths**; see the [official guide](https://developers.cloudflare.com/workers/ci-cd/builds/build-watch-paths/). These settings are independent of GitHub Actions `paths-ignore`.
 
 ##### Update Notices
 
@@ -585,6 +596,14 @@ If CloudSSH has been helpful to your workflow or projects, consider sponsoring t
 <a href="https://afdian.com/a/newbietan" target="_blank">
   <img src="https://pic1.afdiancdn.com/static/img/welcome/button-sponsorme.png" alt="Sponsor on Afdian" width="200">
 </a>
+
+<a id="special-thanks"></a>
+
+## Special Thanks
+
+Special thanks to those who financially support CloudSSH's ongoing maintenance and development. Your encouragement helps keep the project moving forward!
+
+- <a href="https://github.com/shunia"><img src="https://github.com/shunia.png?size=80" width="40" height="40" alt="shunia" align="middle" /></a> [shunia](https://github.com/shunia) — Thank you for supporting this project through Afdian.
 
 <a id="license"></a>
 

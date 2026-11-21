@@ -12,6 +12,8 @@ import {
   type UnifiedServerMemory,
 } from '../../../src/server-memory-schema';
 import { copyTextToClipboard } from '../clipboard';
+import { assistantIconMarkup, createAssistantIcon } from '../assistant-icons';
+import '../assistant-ui.css';
 import { attachDrawerSwipeToClose } from '../drawer-swipe';
 import { getLocale, onLocaleChange, t, translateDocument } from '../i18n';
 import { confirmAction, notify } from '../ui-feedback';
@@ -347,17 +349,16 @@ export class AgentPanel {
     this.panelEl = document.createElement('div');
     this.panelEl.id = 'agent-panel';
     this.panelEl.className =
-      'fixed top-0 right-0 h-full z-[85] flex flex-col transition-transform duration-300 ease-in-out shadow-2xl';
+      'assistant-shell fixed top-0 right-0 h-full z-[85] flex flex-col transition-transform duration-300 ease-in-out shadow-2xl';
     this.panelEl.style.transform = 'translateX(100%)';
     this.panelEl.style.display = 'none';
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     this.panelEl.innerHTML = `
-      <div class="flex flex-col w-full h-full bg-[var(--bg)] border-l border-[var(--border)] text-on-surface overflow-hidden relative">
-        <div class="agent-panel-header flex items-center justify-between px-4 h-12 border-b border-[var(--border)] bg-[var(--bg-elevated)] shrink-0">
+      <div class="assistant-panel-surface flex flex-col w-full h-full border-l border-[var(--border)] text-on-surface overflow-hidden relative">
+        <div class="assistant-panel-header agent-panel-header">
           <div class="flex items-center gap-2 min-w-0">
-            <span class="material-symbols-outlined text-[var(--accent-secondary)]" style="font-size: 18px; font-variation-settings: 'FILL' 1;">smart_toy</span>
-            <span class="agent-panel-title text-xs font-bold tracking-[0.1em] text-[var(--accent-secondary)] truncate" data-i18n="agent.title">AI Agent 助手</span>
+            <span class="assistant-panel-icon">${assistantIconMarkup('agent')}</span>
+            <span class="assistant-panel-title agent-panel-title truncate" data-i18n="agent.title">AI Agent 助手</span>
           </div>
           <div class="flex items-center gap-1.5">
             <div id="agent-mode-control" class="agent-mode-segmented" role="radiogroup" aria-label="Agent execution mode" data-active-mode="${this.agentMode}">
@@ -370,13 +371,13 @@ export class AgentPanel {
                 <span class="agent-mode-btn-text" data-i18n="agent.modeAutoShort">${t('agent.modeAutoShort')}</span>
               </button>
             </div>
-            <button id="agent-new-chat-btn" class="agent-header-btn" data-i18n-title="agent.newChat" title="${t('agent.newChat')}" aria-label="${t('agent.newChat')}">
+            <button id="agent-new-chat-btn" class="agent-header-btn assistant-icon-action" data-i18n-title="agent.newChat" title="${t('agent.newChat')}" aria-label="${t('agent.newChat')}">
               <span class="material-symbols-outlined" aria-hidden="true">add</span>
             </button>
-            <button id="agent-memory-btn" class="agent-header-btn" data-i18n-title="agent.memoryTitle" title="工作备忘与记忆" aria-label="工作备忘与记忆">
+            <button id="agent-memory-btn" class="agent-header-btn assistant-icon-action" data-i18n-title="agent.memoryTitle" title="工作备忘与记忆" aria-label="工作备忘与记忆">
               <span class="material-symbols-outlined" aria-hidden="true">history_edu</span>
             </button>
-            <button id="agent-close-btn" class="agent-header-btn agent-close-button" data-i18n-title="agent.backToTerminal" data-i18n-aria-label="agent.backToTerminal" title="返回终端" aria-label="返回终端">
+            <button id="agent-close-btn" class="agent-header-btn assistant-icon-action agent-close-button" data-i18n-title="agent.backToTerminal" data-i18n-aria-label="agent.backToTerminal" title="返回终端" aria-label="返回终端">
               <span class="agent-mobile-back material-symbols-outlined" aria-hidden="true">arrow_back</span>
               <span class="agent-mobile-back agent-back-label" data-i18n="agent.backToTerminal">返回终端</span>
               <span class="agent-desktop-close material-symbols-outlined" aria-hidden="true">close</span>
@@ -431,7 +432,7 @@ export class AgentPanel {
           </div>
         </div>
         <div id="agent-messages" class="flex-1 overflow-y-auto px-4 py-3 space-y-3 custom-scrollbar text-[13px]"></div>
-        <div class="agent-panel-composer px-4 py-3 border-t border-[var(--border)] bg-[var(--bg-elevated)] shrink-0">
+        <div class="assistant-panel-footer agent-panel-composer">
           <div id="agent-quick-chips" class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2 select-none">
             <button type="button" class="agent-quick-chip shrink-0 text-[11px] px-2 py-0.5 rounded border border-outline-variant/60 hover:border-[var(--accent)] text-muted hover:text-primary transition-colors cursor-pointer flex items-center gap-1 bg-[var(--bg)]" data-prompt-key="promptError">
               <span class="material-symbols-outlined text-[13px] text-error">error_outline</span>
@@ -454,10 +455,10 @@ export class AgentPanel {
           <div class="flex gap-2.5 items-end">
             <textarea id="agent-input" data-i18n-placeholder="agent.placeholder" placeholder="描述你希望 Agent 完成的任务…"
               rows="1"
-              class="terminal-input flex-1 text-[13px] resize-none overflow-y-auto"
+              class="terminal-input assistant-field flex-1 resize-none overflow-y-auto"
               style="max-height: 140px; line-height: 1.5; padding: 8px 12px; border-radius: 8px;"
               autocomplete="off"></textarea>
-            <button id="agent-send-btn" class="agent-send-btn shrink-0" data-i18n-title="agent.send" title="发送">
+            <button id="agent-send-btn" class="agent-send-btn assistant-accent-control shrink-0" data-i18n-title="agent.send" title="发送">
               <span class="material-symbols-outlined" style="font-size:20px;">arrow_upward</span>
             </button>
           </div>
@@ -854,14 +855,12 @@ export class AgentPanel {
         btn.classList.add('is-stopping');
         btn.title = t('agent.stop');
         btn.setAttribute('data-i18n-title', 'agent.stop');
-        // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
         btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px;">stop</span>';
       } else {
         btn.classList.remove('is-stopping');
         btn.title = t('agent.send');
         btn.setAttribute('data-i18n-title', 'agent.send');
         btn.disabled = blocked || isWaiting || this.isStopping || !this.inputEl?.value.trim();
-        // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
         btn.innerHTML = '<span class="material-symbols-outlined" style="font-size:20px;">arrow_upward</span>';
       }
     }
@@ -885,11 +884,7 @@ export class AgentPanel {
       if (this.thinkingStatusEl) {
         this.thinkingStatusEl.textContent = `${t('agent.abortedBadge')} (${this.thinkingStepCount})`;
       }
-      const mainIcon = this.thinkingProcessEl.querySelector('.tp-icon') as HTMLElement | null;
-      if (mainIcon) {
-        mainIcon.textContent = 'cancel';
-        mainIcon.style.color = 'var(--error)';
-      }
+      this.setThinkingProcessIcon('cancel');
     }
 
     if (this.streamingEl) {
@@ -964,7 +959,6 @@ export class AgentPanel {
     if (!context) return;
 
     const source = context.sourceLabel || t('agent.selectionUnknownSource');
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     this.contextEl.innerHTML = `
       <div class="agent-context-chip">
         <details class="agent-context-details">
@@ -997,13 +991,21 @@ export class AgentPanel {
       });
   }
 
+  private setThinkingProcessIcon(icon: 'agent' | 'done' | 'cancel'): void {
+    const node = this.thinkingProcessEl?.querySelector<HTMLElement>('.tp-icon');
+    if (!node) return;
+    node.classList.toggle('material-symbols-outlined', icon !== 'agent');
+    node.style.color = icon === 'cancel' ? 'var(--error)' : '';
+    if (icon === 'agent') node.replaceChildren(createAssistantIcon('agent'));
+    else node.textContent = icon === 'done' ? 'check_circle' : 'cancel';
+  }
+
   private reactivateThinkingProcess(): void {
     if (!this.thinkingProcessEl || !this.thinkingIsDone) return;
     this.thinkingIsDone = false;
     this.thinkingProcessEl.classList.remove('tp-done', 'tp-expanded');
 
-    const mainIcon = this.thinkingProcessEl.querySelector('.tp-icon') as HTMLElement | null;
-    if (mainIcon) mainIcon.textContent = 'smart_toy';
+    this.setThinkingProcessIcon('agent');
 
     const dots = this.thinkingProcessEl.querySelector('.thinking-dots') as HTMLElement | null;
     if (dots) dots.style.display = '';
@@ -1052,11 +1054,10 @@ export class AgentPanel {
     const container = document.createElement('div');
     container.className = 'agent-thinking-process';
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     container.innerHTML = `
       <button class="tp-accordion" type="button">
         <span class="tp-chevron material-symbols-outlined">expand_more</span>
-        <span class="tp-icon material-symbols-outlined" style="font-variation-settings:'FILL' 1;">smart_toy</span>
+        <span class="tp-icon">${assistantIconMarkup('agent')}</span>
         <span class="tp-status">${t('agent.thinking')}</span>
         <div class="thinking-dots">
           <span class="w-1 h-1 rounded-full bg-[var(--agent-agent-color)] animate-bounce" style="animation-delay:0ms;"></span>
@@ -1093,7 +1094,6 @@ export class AgentPanel {
     if (this.livePreviewCache.length > 2) this.livePreviewCache.shift();
     const icon =
       '<span class="material-symbols-outlined tp-live-icon" style="font-variation-settings:\'FILL\' 0;">terminal</span>';
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     this.thinkingLiveEl.innerHTML = this.livePreviewCache
       .map((l) => `<div class="tp-live-item">${icon}<span>${escapeHtml(l)}</span></div>`)
       .join('');
@@ -1122,9 +1122,8 @@ export class AgentPanel {
     const icon =
       tool === 'execute_command' || tool === 'terminal'
         ? '<span class="material-symbols-outlined tp-step-icon" style="font-variation-settings:\'FILL\' 0;">terminal</span>'
-        : '<span class="material-symbols-outlined tp-step-icon" style="font-variation-settings:\'FILL\' 1;">smart_toy</span>';
+        : `<span class="tp-step-icon">${assistantIconMarkup('agent')}</span>`;
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     stepEl.innerHTML = `${icon}<span class="tp-step-label">${escapeHtml(label)}</span>`;
 
     this.thinkingCurrentEl.appendChild(stepEl);
@@ -1165,7 +1164,6 @@ export class AgentPanel {
           step.tool === 'execute_command' || step.tool === 'terminal'
             ? '<span class="material-symbols-outlined tp-step-icon" style="font-variation-settings:\'FILL\' 0;">check_circle</span>'
             : '<span class="material-symbols-outlined tp-step-icon" style="font-variation-settings:\'FILL\' 1;">check_circle</span>';
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
         stepEl.innerHTML = `${icon}<span class="tp-step-label">${escapeHtml(step.label)}</span>`;
         this.thinkingStepsEl.appendChild(stepEl);
       }
@@ -1184,8 +1182,7 @@ export class AgentPanel {
       });
     }
 
-    const mainIcon = this.thinkingProcessEl.querySelector('.tp-icon') as HTMLElement | null;
-    if (mainIcon) mainIcon.textContent = 'check_circle';
+    this.setThinkingProcessIcon('done');
 
     const dots = this.thinkingProcessEl.querySelector('.thinking-dots') as HTMLElement | null;
     if (dots) dots.style.display = 'none';
@@ -1234,9 +1231,8 @@ export class AgentPanel {
       el.className = 'agent-message agent-response';
 
       const themeColor = 'var(--agent-agent-color)';
-      const roleIcon = `<span class="material-symbols-outlined text-[15px]" style="color:${themeColor};font-variation-settings:'FILL' 1;">smart_toy</span>`;
+      const roleIcon = `<span class="text-[15px]" style="color:${themeColor};">${assistantIconMarkup('agent')}</span>`;
 
-      // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
       el.innerHTML = `
         <div class="flex gap-2 items-start">
           <div class="agent-role-icon-wrapper">${roleIcon}</div>
@@ -1274,12 +1270,10 @@ export class AgentPanel {
         // renderMarkdown() wraps output in its own .agent-md-content div,
         // so we extract the inner HTML to avoid nesting.
         const tmp = document.createElement('div');
-        // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
         tmp.innerHTML = this.renderMarkdown(finalContent);
         const inner = tmp.querySelector('.agent-md-content');
         if (inner) {
           // Sanitized renderMarkdown output only; missing wrapper falls back to text.
-          // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
           contentEl.innerHTML = inner.innerHTML;
         } else {
           contentEl.textContent = finalContent;
@@ -1348,7 +1342,6 @@ export class AgentPanel {
       ? t('agent.confirmAutoCountdown', { seconds: 3 })
       : t('agent.confirm');
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     el.innerHTML = `
       <div class="flex items-center justify-between gap-1 mb-1">
         <div id="agent-confirm-title" class="text-[11px] font-bold text-[var(--error)] flex items-center gap-1 min-w-0 truncate">
@@ -1485,8 +1478,7 @@ export class AgentPanel {
       this.thinkingIsDone = false;
       this.thinkingProcessEl.classList.remove('tp-done');
 
-      const mainIcon = this.thinkingProcessEl.querySelector('.tp-icon') as HTMLElement | null;
-      if (mainIcon) mainIcon.textContent = 'smart_toy';
+      this.setThinkingProcessIcon('agent');
 
       const dots = this.thinkingProcessEl.querySelector('.thinking-dots') as HTMLElement | null;
       if (dots) dots.style.display = '';
@@ -1520,7 +1512,7 @@ export class AgentPanel {
     const roleIcon = isUser
       ? `<span class="material-symbols-outlined text-[15px]" style="color:${themeColor};font-variation-settings:'FILL' 1;">person</span>`
       : isAgent
-        ? `<span class="material-symbols-outlined text-[15px]" style="color:${themeColor};font-variation-settings:'FILL' 1;">smart_toy</span>`
+        ? `<span class="text-[15px]" style="color:${themeColor};">${assistantIconMarkup('agent')}</span>`
         : isExecuting
           ? `<span class="material-symbols-outlined text-[15px]" style="color:${themeColor};font-variation-settings:'FILL' 0;">terminal</span>`
           : `<span class="material-symbols-outlined text-[15px]" style="color:${themeColor};font-variation-settings:'FILL' 1;">error</span>`;
@@ -1541,7 +1533,6 @@ export class AgentPanel {
       }
       this.renderUserMessageContent(el, content, options);
     } else {
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
       el.innerHTML = `
         <div class="flex gap-2 items-start">
           <div class="agent-role-icon-wrapper">${roleIcon}</div>
@@ -1574,7 +1565,6 @@ export class AgentPanel {
         </div>`
         : '';
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     el.innerHTML = `
       <div class="flex justify-end agent-user-container group relative">
         <div class="max-w-[calc(100%-64px)] px-3 py-2 rounded-lg agent-user-bubble relative" style="background: color-mix(in srgb, ${themeColor} 12%, transparent); border: 1px solid color-mix(in srgb, ${themeColor} 30%, transparent);">
@@ -1631,7 +1621,6 @@ export class AgentPanel {
 
     const themeColor = 'var(--agent-user-color)';
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     el.innerHTML = `
       <div class="flex flex-col items-end agent-user-edit-container w-full">
         <div class="agent-user-edit-bubble max-w-[85%] min-w-[160px] rounded-xl px-3 py-2 relative transition-all"
@@ -1969,7 +1958,6 @@ export class AgentPanel {
     chip.id = 'agent-resume-task-chip';
     chip.className =
       'agent-quick-chip shrink-0 text-[11px] px-2.5 py-0.5 rounded border border-warning/60 hover:border-warning text-warning hover:text-primary transition-colors cursor-pointer flex items-center gap-1 bg-warning/10 font-medium';
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     chip.innerHTML = `
       <span class="material-symbols-outlined text-[13px]">play_circle</span>
       <span data-i18n="agent.resumeInterruptedTask">${escapeHtml(t('agent.resumeInterruptedTask'))}</span>
@@ -2297,7 +2285,6 @@ export class AgentPanel {
     }
 
     if (!this.serverId) {
-      // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
       this.memoryContentEl.innerHTML = `
         <div class="p-4 text-center text-muted text-xs">
           ${t('agent.memoryDirectNotice')}
@@ -2310,7 +2297,6 @@ export class AgentPanel {
 
     if (this.activeMemoryTab === 'workLog') {
       if (this.unifiedMemory.workLogs.length === 0) {
-        // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
         this.memoryContentEl.innerHTML = `
           <div class="p-4 text-center text-muted text-xs">
             ${t('agent.workLogEmpty')}
@@ -2339,7 +2325,6 @@ export class AgentPanel {
         })
         .join('');
 
-      // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
       this.memoryContentEl.innerHTML = logsHtml;
 
       this.memoryContentEl.querySelectorAll<HTMLElement>('.agent-log-summary').forEach((el) => {
@@ -2380,7 +2365,6 @@ export class AgentPanel {
     if (this.unifiedMemory.knowledge.length === 0) {
       this.memoryBatchBtn?.classList.add('hidden');
       this.exitBatchMode();
-      // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
       this.memoryContentEl.innerHTML = `
         <div class="p-4 text-center text-muted text-xs">
           ${t('agent.knowledgeEmpty')}
@@ -2493,7 +2477,6 @@ export class AgentPanel {
       })
       .join('');
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     this.memoryContentEl.innerHTML = groupsHtml;
 
     this.memoryContentEl.querySelectorAll<HTMLElement>('.agent-knowledge-group-header').forEach((hdr) => {
@@ -2600,7 +2583,6 @@ export class AgentPanel {
     if (!this.memoryAddFormContainerEl) return;
     this.memoryAddFormContainerEl.classList.remove('hidden');
 
-    // pi-lens-ignore: no-inner-html, ts-xss-dom-sink
     this.memoryAddFormContainerEl.innerHTML = `
       <form id="agent-add-knowledge-form" class="space-y-2">
         <div class="flex gap-2">
