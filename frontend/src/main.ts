@@ -1,7 +1,7 @@
 import { AIConfigPanel } from './ai-config';
 import { openAdminHashGeneratorDialog } from './admin-hash-generator';
 import { ConnectionForm } from './auth-form';
-import { type AppConfig, type InitialUser, loadInitialAppState } from './app-bootstrap';
+import { type AppConfig, type InitialUser, isInitialUser, loadInitialAppState } from './app-bootstrap';
 import { clearLegacyAgentSessionDrafts, clearUserAgentSessionDrafts } from './agent/session-draft';
 import { initI18n, onLocaleChange, t } from './i18n';
 import { MobileTerminalController } from './mobile-terminal';
@@ -31,12 +31,14 @@ import { requestCloudflareSshCertificate } from './cf-ssh-ca';
 import { notify } from './ui-feedback';
 import { initVersionNotice } from './version-notice';
 import { McpManager } from './mcp-manager';
+import { rdpEntryId, RdpWorkspace } from './rdp-workspace';
 import { serverOwnerKey } from './server-removal';
 import { mountAssistantIcons } from './assistant-icons';
 
 // ==================== 全局状态 ====================
 
 let tabManager: TabManager | null = null;
+let rdpWorkspace: RdpWorkspace | undefined;
 let connectionForm: ConnectionForm | null = null;
 let appConfig: AppConfig | null = null;
 let serverList: ServerList | null = null;
@@ -177,7 +179,9 @@ function showTerminalSection(): void {
   if (!tabManager || !tabManager.hasAnyTab()) return;
   tabManager.getActiveTab()?.agentPanel?.rejectPendingConfirmation(false);
   activateTerminalView();
-  tabManager.getActiveTab()?.terminal.fit();
+  const terminal = tabManager.getActiveTab()?.terminal;
+  terminal?.setRemoteCopyVisible(true);
+  terminal?.fit();
 }
 
 function bindBackToTerminalButtons(): void {
@@ -262,13 +266,20 @@ function initTerminalTab(): void {
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
   const hostInfo = host && port ? { host, port } : undefined;
-  tab.terminal.connectWithWebSocket(ws, hostInfo);
+  // A standalone URL may point at a share or a resume of unknown origin. Never grant
+  // clipboard access for those; the normal in-app resume inherits the original policy.
+  const endpoint = new URL(wsUrl);
+  const allowRemoteCopy = endpoint.pathname === '/api/ssh' &&
+    !['share_ref', 'share_ticket', 'session', 'resume_token'].some(key => endpoint.searchParams.has(key));
+  tab.terminal.connectWithWebSocket(ws, hostInfo, { allowRemoteCopy });
 }
 
 // ==================== 页面切换 ====================
 
 function deactivateTerminalView(): void {
-  tabManager?.getActiveTab()?.terminal.cancelPendingPaste();
+  const terminal = tabManager?.getActiveTab()?.terminal;
+  terminal?.cancelPendingPaste();
+  terminal?.setRemoteCopyVisible(false);
   closeAllDrawers();
   mobileTerminalController.leaveTerminal();
   document.getElementById('terminal-section')!.classList.add('hidden');
@@ -276,9 +287,15 @@ function deactivateTerminalView(): void {
   document.body.classList.remove('terminal-active');
 }
 
-function showAuthSection(): void {
+function showAuthSection(): boolean {
   mcpManager.setIdentity(null);
-  if (!appConfig) return;
+  if (!appConfig) return false;
+  if (window.crossOriginIsolated && appConfig.rdpEnabled && location.search !== '?signin') {
+    // A signed-out page needs the ordinary non-isolated document for OAuth/Turnstile.
+    document.getElementById('app')!.hidden = true;
+    location.replace('/?signin');
+    return false;
+  }
   deactivateTerminalView();
   document.getElementById('auth-section')!.classList.remove('hidden');
   document.getElementById('user-space-section')!.classList.add('hidden');
@@ -299,6 +316,7 @@ function showAuthSection(): void {
     });
   }
   syncConnectionBackButtons();
+  return true;
 }
 
 function showUserSpace(user: InitialUser, config: AppConfig): void {
@@ -325,6 +343,17 @@ function showUserSpace(user: InitialUser, config: AppConfig): void {
   document.getElementById('mobile-shortcuts-terminal-btn')?.classList.remove('hidden');
   mobileShortcutsManager.setLoggedIn(true);
 
+  serverList?.disposeRdp();
+  rdpWorkspace?.dispose();
+  rdpWorkspace = config.rdpEnabled ? new RdpWorkspace(
+    () => tabManager?.hasAnyTab() === true, () => { void serverList?.fetchRdpProfiles(); }, false,
+    async () => {
+      const response = await fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000) });
+      if (!response.ok) return false;
+      const fresh: unknown = await response.json();
+      return isInitialUser(fresh) && fresh.id === user.id && serverOwnerKey(fresh) === serverOwnerKey(user);
+    },
+  ) : undefined;
   serverList = new ServerList(
     user,
     // onLogout 回调
@@ -332,6 +361,9 @@ function showUserSpace(user: InitialUser, config: AppConfig): void {
       isLoggedIn = false;
       currentGithubId = null;
       customThemeStore.setLoggedIn(false);
+      serverList?.disposeRdp();
+      rdpWorkspace?.dispose();
+      rdpWorkspace = undefined;
       serverList = null;
       tabManager?.setUser(null);
       // Dispose panels before clearing storage so late frames cannot recreate drafts.
@@ -343,7 +375,7 @@ function showUserSpace(user: InitialUser, config: AppConfig): void {
     (wsUrl: string, serverName: string, hostInfo?: SSHHostInfo) => {
       showTerminalFromServer(wsUrl, serverName, hostInfo);
     },
-    config
+    config, id => { void rdpWorkspace?.open(id); }
   );
 }
 
@@ -1021,6 +1053,16 @@ function finishAppLoading(): void {
 }
 
 async function init(): Promise<void> {
+  if (!window.crossOriginIsolated && location.search === '?signin') history.replaceState(null, '', '/' + location.hash);
+  if (rdpEntryId()) {
+    // The Worker already authenticated this page and checked profile ownership. The iframe,
+    // profile, ticket and WS still perform their own checks. Do not mount a second server list.
+    initI18n();
+    restoreTheme();
+    document.getElementById('app-loading')?.remove(); // Keep #app hidden and inert on this route.
+    rdpWorkspace = new RdpWorkspace(() => false, () => {}, true);
+    return;
+  }
   mountAssistantIcons();
   clearLegacyAgentSessionDrafts();
   initI18n();
@@ -1135,9 +1177,7 @@ async function init(): Promise<void> {
       if (state.user) {
         showUserSpace(state.user, state.config);
         void restoreCloudTheme(initialThemeSelection, themeSelectionRevision);
-      } else {
-        showAuthSection();
-      }
+      } else if (!showAuthSection()) return;
       finishAppLoading();
     } catch {
       // Unknown configuration/authentication is not permission to show an anonymous form.
