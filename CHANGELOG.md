@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.4] - 2026-11-24
+
+### Added
+
+- **Windows 远程桌面自定义直连端口**：新增或编辑 Windows Server 时可填写 TCP 端口，默认仍为 `3389`，已有设备无需迁移配置。更改端口时需重新录入 Windows 密码并核对证书指纹。Cloudflare Tunnel 的目标端口仍在 `cloudflared` 中配置。关联 Issue：[#208](https://github.com/newbietan/CloudSSH/issues/208)。
+
+### Changed
+
+- Windows 设备表单的线路、主机和登录字段图标与 SSH 表单统一。
+
+## [2.12.3] - 2026-11-24
+
+### Fixed
+
+- **Windows 远程桌面键盘焦点**：桌面就绪或进出全屏后可直接打字，回车不再误触「返回」或切换全屏。用户主动选中的「返回」按钮和证书确认弹窗仍保留焦点。
+- **右键和鼠标侧键**：在远程画面内点击右键不再弹出浏览器菜单，前进／后退侧键也不会触发浏览器导航或断开桌面；画面外的浏览器操作不变。
+- **远程桌面快捷键冲突**：右 Shift + D 不再触发 FreeRDP 本地断开快捷键；在 RDP 工具栏按 Esc 也不会切换到底层 SSH 标签。
+
 ## [2.12.2] - 2026-11-24
 
 ### Added
